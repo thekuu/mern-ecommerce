@@ -93,4 +93,4 @@ npm start
 
 ## 📝 License
 
-This project is proprietary and confidential.
+Designed and developed by Zekaryas Geremew. All rights reserved.
