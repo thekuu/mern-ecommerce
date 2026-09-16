@@ -1,0 +1,6 @@
+{
+  "name": "ShegAddis",
+  "description": "Premium footwear and handpicked apparel marketplace with fast delivery in Addis Ababa.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

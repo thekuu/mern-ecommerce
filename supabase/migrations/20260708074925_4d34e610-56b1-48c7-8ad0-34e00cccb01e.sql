@@ -1,0 +1,2 @@
+CREATE POLICY "Public read telegram-images" ON storage.objects FOR SELECT USING (bucket_id = 'telegram-images');
+CREATE POLICY "Anyone write telegram-images" ON storage.objects FOR INSERT WITH CHECK (bucket_id = 'telegram-images');

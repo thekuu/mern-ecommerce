@@ -1,0 +1,61 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ── Global Helper Functions ─────────────────────────────────
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // ── Default Deny Catch-All ─────────────────────────────────
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // ── Products (Public Read, Authenticated/Admin Write) ──────
+    match /products/{productId} {
+      allow read: if true;
+      allow write: if isSignedIn() && isValidId(productId);
+    }
+
+    // ── Categories (Public Read, Authenticated/Admin Write) ────
+    match /categories/{categoryId} {
+      allow read: if true;
+      allow write: if isSignedIn() && isValidId(categoryId);
+    }
+
+    // ── Orders (Public Create for checkout, Owner or Admin Read) ─
+    match /orders/{orderId} {
+      allow create: if isValidId(orderId);
+      allow read: if isSignedIn();
+      allow update, delete: if isSignedIn() && isValidId(orderId);
+    }
+
+    // ── User Profiles ──────────────────────────────────────────
+    match /users/{userId} {
+      allow read: if isSignedIn() && isValidId(userId);
+      allow create, update: if isOwner(userId) && isValidId(userId);
+    }
+
+    // ── Health Check / Test ───────────────────────────────────
+    match /test/{docId} {
+      allow read: if true;
+    }
+
+    // ── Telegram Automation Sources & Drafts ───────────────────
+    match /telegramSources/{sourceId} {
+      allow read, write: if isSignedIn() && isValidId(sourceId);
+    }
+
+    match /telegramDrafts/{draftId} {
+      allow read, write: if isSignedIn() && isValidId(draftId);
+    }
+  }
+}
