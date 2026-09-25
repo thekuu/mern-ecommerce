@@ -1,0 +1,18 @@
+[
+  {
+    "id": "cat-clothes",
+    "name": "Clothes",
+    "slug": "clothes",
+    "description": "Everyday heavy tees, linen overshirts, denim, and fine knitwear.",
+    "image": "https://images.unsplash.com/photo-1489987707025-afc232f7ea0f?w=1000&h=1200&fit=crop",
+    "productCount": 2
+  },
+  {
+    "id": "cat-shoes",
+    "name": "Shoes",
+    "slug": "shoes",
+    "description": "Leather court sneakers, trail runners, desert boots, and canvas slip-ons.",
+    "image": "https://images.unsplash.com/photo-1542291026-7eec264c27ff?w=1000&h=1200&fit=crop",
+    "productCount": 0
+  }
+]

@@ -111,6 +111,13 @@ export async function deleteProduct(id: string): Promise<{ message: string }> {
   });
 }
 
+export async function cleanupOldNewProducts(days: number = 10): Promise<{ success: boolean; deletedCount: number; message: string }> {
+  return request<{ success: boolean; deletedCount: number; message: string }>('/products/cleanup-old-new', {
+    method: 'POST',
+    body: JSON.stringify({ days }),
+  });
+}
+
 // ─── Categories ─────────────────────────────────────────────
 
 export async function getCategories(): Promise<Category[]> {

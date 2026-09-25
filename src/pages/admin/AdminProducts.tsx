@@ -13,6 +13,7 @@ import { formatETB } from '@/lib/currency';
 import { FALLBACK_PRODUCT_IMAGE, getImageUrl, handleImageFallback } from '@/lib/images';
 import { useProductStore } from '@/store/productStore';
 import { ProductFormDialog } from '@/components/admin/ProductFormDialog';
+import { cleanupOldNewProducts } from '@/lib/api';
 
 export default function AdminProducts() {
   const products = useProductStore((s) => s.products);
@@ -24,6 +25,7 @@ export default function AdminProducts() {
   const [editing, setEditing] = useState<Product | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [isCleaning, setIsCleaning] = useState(false);
 
   useEffect(() => {
     fetchProducts(true);
@@ -34,6 +36,23 @@ export default function AdminProducts() {
 
   const openNew = () => { setEditing(null); setFormOpen(true); };
   const openEdit = (p: Product) => { setEditing(p); setFormOpen(true); };
+
+  const handleCleanOldProducts = async () => {
+    setIsCleaning(true);
+    try {
+      const res = await cleanupOldNewProducts(10);
+      if (res.deletedCount > 0) {
+        toast.success(res.message);
+        await fetchProducts(true);
+      } else {
+        toast.info('No products older than 10 days marked only as new were found.');
+      }
+    } catch (err: any) {
+      toast.error('Failed to cleanup products: ' + (err.message || 'Error'));
+    } finally {
+      setIsCleaning(false);
+    }
+  };
 
   const confirmDelete = async () => {
     if (!deleteId) return;
@@ -54,6 +73,17 @@ export default function AdminProducts() {
       <div className="flex items-center justify-between mb-6">
         <h2 className="font-heading text-2xl font-bold">Products ({products.length})</h2>
         <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleCleanOldProducts}
+            disabled={isCleaning || isLoading}
+            className="text-xs text-muted-foreground hover:text-foreground"
+            title="Delete products marked only as new that are older than 10 days"
+          >
+            <Trash2 className={`h-3.5 w-3.5 mr-1.5 ${isCleaning ? 'animate-spin text-destructive' : ''}`} />
+            {isCleaning ? 'Cleaning...' : 'Clean Old (>10d)'}
+          </Button>
           <Button
             variant="outline"
             size="sm"

@@ -576,10 +576,36 @@ app.delete('/api/categories/:id', requireAdmin, async (req, res) => {
   res.json({ message: 'Category deleted' });
 });
 
+// ── Auto-Cleanup Service: Old New-Arrival Products (>10 Days) ──
+let lastAutoCleanupTime = 0;
+const AUTO_CLEANUP_THROTTLE_MS = 30 * 60 * 1000; // Check at most once every 30 minutes during active requests
+
+export async function runAutoCleanupIfNeeded(force: boolean = false): Promise<number> {
+  const now = Date.now();
+  if (!force && now - lastAutoCleanupTime < AUTO_CLEANUP_THROTTLE_MS) {
+    return 0;
+  }
+  lastAutoCleanupTime = now;
+  try {
+    const deletedCount = await repository.deleteOldNewArrivalProducts(10);
+    if (deletedCount > 0) {
+      console.log(`🧹 Auto-cleanup: Deleted ${deletedCount} old new-arrival products (older than 10 days).`);
+    }
+    return deletedCount;
+  } catch (err) {
+    console.error('Error during auto-cleanup:', err);
+    return 0;
+  }
+}
+
 // ── Products Endpoints ────────────────────────────────────────
 
 app.get('/api/products', async (req, res) => {
   try {
+    // Automatically purge products marked only as new that are older than 10 days
+    // ensures cleanup works seamlessly on serverless platforms (Vercel) upon traffic
+    await runAutoCleanupIfNeeded();
+
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
     const {
       category,
@@ -653,6 +679,59 @@ app.delete('/api/products/:id', requireAdmin, async (req, res) => {
   const deleted = await repository.deleteProduct(req.params.id);
   if (!deleted) return res.status(404).json({ error: 'Product not found' });
   res.json({ message: 'Product deleted' });
+});
+
+// ── Product Auto-Cleanup & Vercel Cron Endpoints ───────────────
+
+// Vercel Cron endpoint: triggered automatically on schedule by Vercel
+app.all(['/api/cron/cleanup-products', '/api/cron/cleanup'], async (req, res) => {
+  try {
+    const cronSecret = process.env.CRON_SECRET;
+    const authHeader = req.headers['authorization'];
+    // If CRON_SECRET is configured in environment, verify it (unless called by admin)
+    if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
+      const token = req.cookies?.token || (authHeader?.startsWith('Bearer ') ? authHeader.split(' ')[1] : null);
+      if (token) {
+        try {
+          const decoded = jwt.verify(token, JWT_SECRET) as any;
+          if (decoded.role !== 'admin' && decoded.role !== 'superadmin') {
+            return res.status(401).json({ error: 'Unauthorized cron invocation' });
+          }
+        } catch {
+          return res.status(401).json({ error: 'Unauthorized cron invocation' });
+        }
+      } else {
+        return res.status(401).json({ error: 'Unauthorized cron invocation' });
+      }
+    }
+
+    const deletedCount = await runAutoCleanupIfNeeded(true);
+    res.json({
+      success: true,
+      deletedCount,
+      message: `Cleaned up ${deletedCount} old new-arrival products (older than 10 days).`,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err: any) {
+    console.error('Error in cron cleanup:', err);
+    res.status(500).json({ error: err.message || 'Failed to run cleanup service' });
+  }
+});
+
+// Admin manual cleanup endpoint: allows admin to run cleanup on-demand
+app.post('/api/products/cleanup-old-new', requireAdmin, async (req, res) => {
+  try {
+    const days = req.body?.days ? Number(req.body.days) : 10;
+    const deletedCount = await repository.deleteOldNewArrivalProducts(days);
+    res.json({
+      success: true,
+      deletedCount,
+      message: `Successfully deleted ${deletedCount} product(s) marked only as new and older than ${days} days.`,
+    });
+  } catch (err: any) {
+    console.error('Admin cleanup error:', err);
+    res.status(500).json({ error: err.message || 'Failed to cleanup old products' });
+  }
 });
 
 // ── Orders Endpoints ──────────────────────────────────────────
@@ -1019,26 +1098,15 @@ app.get('/api/analytics/visitors', requireAdmin, async (req, res) => {
 // ── Development / Production Vite Integration ─────────────────
 
 async function startServer() {
-  // Start background auto-cleanup job for old new arrivals (10 days old)
-  const cleanupOldProducts = async () => {
-    try {
-      const deletedCount = await repository.deleteOldNewArrivalProducts(10);
-      if (deletedCount > 0) {
-        console.log(`🧹 Auto-cleanup: Deleted ${deletedCount} old new-arrival products (older than 10 days).`);
-      }
-    } catch (err) {
-      console.error('Error during auto-cleanup:', err);
-    }
-  };
-  
-  // Only run the interval if we are NOT in a Serverless environment like Vercel
-  // Serverless functions are ephemeral and do not support long-running setIntervals
+  // Start background auto-cleanup for old new arrivals (10 days old)
+  // For long-running server environments (Node/Docker), schedule periodic intervals
   if (!process.env.VERCEL) {
-    setTimeout(cleanupOldProducts, 5000);
-    setInterval(cleanupOldProducts, 12 * 60 * 60 * 1000);
-  } else {
-    // Run once on cold boot in serverless
-    cleanupOldProducts();
+    setTimeout(() => {
+      runAutoCleanupIfNeeded(true).catch(() => {});
+    }, 4000);
+    setInterval(() => {
+      runAutoCleanupIfNeeded(true).catch(() => {});
+    }, 6 * 60 * 60 * 1000); // Run every 6 hours
   }
 
   if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {

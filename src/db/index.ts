@@ -915,7 +915,7 @@ export const repository = {
       sku,
       isNew: data.isNew ?? true,
       isFeatured: data.isFeatured ?? false,
-      createdAt: new Date().toISOString(),
+      createdAt: data.createdAt ? new Date(data.createdAt).toISOString() : new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       images: Array.isArray(data.images) && data.images.length > 0 ? data.images : [
         { id: `img-${Date.now()}`, url: 'https://images.unsplash.com/photo-1521572163474-6864f9cf17ab?w=800&h=800&fit=crop', alt: data.name, isPrimary: true },
@@ -944,6 +944,7 @@ export const repository = {
           sku: newProd.sku,
           isNew: newProd.isNew,
           isFeatured: newProd.isFeatured,
+          createdAt: new Date(newProd.createdAt),
         });
 
         for (let i = 0; i < newProd.images.length; i++) {
@@ -1061,37 +1062,123 @@ export const repository = {
   },
 
   async deleteOldNewArrivalProducts(daysOld: number = 10) {
-    const cutoff = new Date(Date.now() - daysOld * 24 * 60 * 60 * 1000).toISOString();
-    const toDelete = memoryStore.products.filter(p => 
-      p.isNew && !p.isFeatured && new Date(p.createdAt).toISOString() < cutoff
-    );
+    const cutoffMs = Date.now() - daysOld * 24 * 60 * 60 * 1000;
+    const cutoffDate = new Date(cutoffMs);
     let count = 0;
-    for (const prod of toDelete) {
-      await this.deleteProduct(prod.id);
-      count++;
-    }
-    return count;
-  },
-
-  async deleteProduct(id: string) {
-    const idx = memoryStore.products.findIndex((p) => p.id === id || p.slug === id || String(p.id) === String(id));
-    if (idx === -1) return false;
-    const prod = memoryStore.products[idx];
+    const deletedIds = new Set<string>();
 
     const db = getDb();
     if (db) {
       try {
-        await db.delete(schema.products).where(eq(schema.products.id, prod.id));
+        // Query Postgres for products marked as ONLY new (isNew = true AND isFeatured = false)
+        // and created more than daysOld days ago
+        const toDeleteRows = await db
+          .select({
+            id: schema.products.id,
+            name: schema.products.name,
+            categoryId: schema.products.categoryId,
+            createdAt: schema.products.createdAt,
+          })
+          .from(schema.products)
+          .where(
+            and(
+              eq(schema.products.isNew, true),
+              eq(schema.products.isFeatured, false),
+              lt(schema.products.createdAt, cutoffDate)
+            )
+          );
+
+        for (const row of toDeleteRows) {
+          const ok = await this.deleteProduct(row.id);
+          if (ok) {
+            deletedIds.add(row.id);
+            count++;
+          }
+        }
+      } catch (err) {
+        console.error('Neon deleteOldNewArrivalProducts error:', err);
+      }
+    }
+
+    // Also check memoryStore to keep in-memory data / local fallback clean
+    const toDeleteFromMemory = memoryStore.products.filter((p) => {
+      if (deletedIds.has(p.id)) return false;
+      const isOnlyNew = Boolean(p.isNew) && !p.isFeatured;
+      if (!isOnlyNew) return false;
+      const createdTime = p.createdAt ? new Date(p.createdAt).getTime() : NaN;
+      return !isNaN(createdTime) && createdTime < cutoffMs;
+    });
+
+    for (const prod of toDeleteFromMemory) {
+      const ok = await this.deleteProduct(prod.id);
+      if (ok) {
+        count++;
+      }
+    }
+
+    return count;
+  },
+
+  async deleteProduct(id: string) {
+    const cleanId = String(id).trim();
+    let deleted = false;
+    let categoryId: string | null = null;
+
+    const db = getDb();
+    if (db) {
+      try {
+        const dbProduct = await db
+          .select({ id: schema.products.id, categoryId: schema.products.categoryId })
+          .from(schema.products)
+          .where(or(eq(schema.products.id, cleanId), eq(schema.products.slug, cleanId)))
+          .limit(1);
+
+        if (dbProduct.length > 0) {
+          const targetId = dbProduct[0].id;
+          categoryId = dbProduct[0].categoryId;
+          await db.delete(schema.productImages).where(eq(schema.productImages.productId, targetId)).catch(() => {});
+          await db.delete(schema.productVariants).where(eq(schema.productVariants.productId, targetId)).catch(() => {});
+          await db.delete(schema.cartItems).where(eq(schema.cartItems.productId, targetId)).catch(() => {});
+          await db.delete(schema.wishlists).where(eq(schema.wishlists.productId, targetId)).catch(() => {});
+          await db.delete(schema.productReviews).where(eq(schema.productReviews.productId, targetId)).catch(() => {});
+          await db.delete(schema.products).where(eq(schema.products.id, targetId));
+          deleted = true;
+        }
       } catch (err) {
         console.error('Neon delete product error:', err);
       }
     }
 
-    memoryStore.products.splice(idx, 1);
-    const cat = memoryStore.categories.find((c) => c.id === prod.categoryId);
-    if (cat && cat.productCount > 0) cat.productCount -= 1;
-    savePersistedProducts(memoryStore.products);
-    return true;
+    const idx = memoryStore.products.findIndex(
+      (p) => p.id === cleanId || p.slug === cleanId || String(p.id) === cleanId
+    );
+    if (idx !== -1) {
+      const prod = memoryStore.products[idx];
+      if (!categoryId) categoryId = prod.categoryId;
+      memoryStore.products.splice(idx, 1);
+      savePersistedProducts(memoryStore.products);
+      deleted = true;
+    }
+
+    if (categoryId) {
+      const cat = memoryStore.categories.find((c) => c.id === categoryId);
+      if (cat && cat.productCount > 0) {
+        cat.productCount -= 1;
+        savePersistedCategories(memoryStore.categories);
+      }
+      if (db) {
+        try {
+          const dbCat = await db.select().from(schema.categories).where(eq(schema.categories.id, categoryId)).limit(1);
+          if (dbCat.length > 0 && dbCat[0].productCount > 0) {
+            await db.update(schema.categories).set({ productCount: Math.max(0, dbCat[0].productCount - 1) }).where(eq(schema.categories.id, categoryId));
+          }
+        } catch (err) {
+          console.warn('Neon category count decrement note:', err);
+        }
+      }
+    }
+
+    return deleted;
   },
 
   // ── Auth & Users ─────────────────────────
