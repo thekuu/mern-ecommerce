@@ -73,10 +73,8 @@ function loadPersistedProducts(defaultProducts: typeof initialProducts): typeof 
   try {
     if (fs.existsSync(PRODUCTS_FILE)) {
       const parsed = JSON.parse(fs.readFileSync(PRODUCTS_FILE, 'utf-8'));
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        const existingIds = new Set(parsed.map((p: any) => p.id));
-        const missingDefaults = defaultProducts.filter((p) => !existingIds.has(p.id));
-        return [...parsed, ...missingDefaults];
+      if (Array.isArray(parsed)) {
+        return parsed;
       }
     }
   } catch (e) {
@@ -252,6 +250,9 @@ export async function initNeonDatabase() {
     for (const dId of dummyProductIds) {
       await db.delete(schema.productImages).where(eq(schema.productImages.productId, dId)).catch(() => {});
       await db.delete(schema.productVariants).where(eq(schema.productVariants.productId, dId)).catch(() => {});
+      await db.delete(schema.cartItems).where(eq(schema.cartItems.productId, dId)).catch(() => {});
+      await db.delete(schema.wishlists).where(eq(schema.wishlists.productId, dId)).catch(() => {});
+      await db.delete(schema.reviews).where(eq(schema.reviews.productId, dId)).catch(() => {});
       await db.delete(schema.products).where(eq(schema.products.id, dId)).catch(() => {});
     }
     for (const oId of ['ord-1', 'ord-2', 'ord-101']) {
@@ -748,6 +749,8 @@ export const repository = {
               variants: vars,
             };
           });
+        } else {
+          memoryStore.products = [];
         }
       } catch (err) {
         console.warn('Neon getProducts note:', err);
@@ -884,7 +887,7 @@ export const repository = {
   },
 
   async createProduct(data: any) {
-    const id = `prod-${Date.now().toString(36)}`;
+    const id = data.id || `prod-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 8)}`;
     const baseSlug = (data.slug || data.name.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')) || `item-${Date.now().toString(36)}`;
     let slug = baseSlug;
     let counter = 1;
@@ -1070,7 +1073,7 @@ export const repository = {
     const db = getDb();
     if (db) {
       try {
-        // Query Postgres for products marked as ONLY new (isNew = true AND isFeatured = false)
+        // Query Postgres for products marked as ONLY new (isNew = true AND isFeatured = false/null)
         // and created more than daysOld days ago
         const toDeleteRows = await db
           .select({
@@ -1083,7 +1086,7 @@ export const repository = {
           .where(
             and(
               eq(schema.products.isNew, true),
-              eq(schema.products.isFeatured, false),
+              or(eq(schema.products.isFeatured, false), sql`${schema.products.isFeatured} IS NULL`),
               lt(schema.products.createdAt, cutoffDate)
             )
           );
@@ -1136,16 +1139,54 @@ export const repository = {
         if (dbProduct.length > 0) {
           const targetId = dbProduct[0].id;
           categoryId = dbProduct[0].categoryId;
-          await db.delete(schema.productImages).where(eq(schema.productImages.productId, targetId)).catch(() => {});
-          await db.delete(schema.productVariants).where(eq(schema.productVariants.productId, targetId)).catch(() => {});
-          await db.delete(schema.cartItems).where(eq(schema.cartItems.productId, targetId)).catch(() => {});
-          await db.delete(schema.wishlists).where(eq(schema.wishlists.productId, targetId)).catch(() => {});
-          await db.delete(schema.productReviews).where(eq(schema.productReviews.productId, targetId)).catch(() => {});
+
+          // Safe unlinking from non-cascading or restrictive tables
+          await db
+            .update(schema.telegramDrafts)
+            .set({ importedProductId: null })
+            .where(eq(schema.telegramDrafts.importedProductId, targetId))
+            .catch((err) => console.warn('Unlink telegramDrafts note:', err));
+
+          await db
+            .update(schema.orderItems)
+            .set({ productId: null })
+            .where(eq(schema.orderItems.productId, targetId))
+            .catch((err) => console.warn('Unlink orderItems note:', err));
+
+          // Cascading child table cleanup
+          await db
+            .delete(schema.productImages)
+            .where(eq(schema.productImages.productId, targetId))
+            .catch((err) => console.warn('Delete productImages note:', err));
+
+          await db
+            .delete(schema.productVariants)
+            .where(eq(schema.productVariants.productId, targetId))
+            .catch((err) => console.warn('Delete productVariants note:', err));
+
+          await db
+            .delete(schema.cartItems)
+            .where(eq(schema.cartItems.productId, targetId))
+            .catch((err) => console.warn('Delete cartItems note:', err));
+
+          await db
+            .delete(schema.wishlists)
+            .where(eq(schema.wishlists.productId, targetId))
+            .catch((err) => console.warn('Delete wishlists note:', err));
+
+          await db
+            .delete(schema.reviews)
+            .where(eq(schema.reviews.productId, targetId))
+            .catch((err) => console.warn('Delete reviews note:', err));
+
+          // Delete product directly from Postgres database
           await db.delete(schema.products).where(eq(schema.products.id, targetId));
           deleted = true;
         }
       } catch (err) {
         console.error('Neon delete product error:', err);
+        // If DB deletion failed for a DB product, return false to prevent state desync
+        return false;
       }
     }
 

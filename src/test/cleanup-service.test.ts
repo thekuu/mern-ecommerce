@@ -66,6 +66,11 @@ describe('deleteOldNewArrivalProducts service', () => {
     const check1 = await repository.getProductBySlug(oldOnlyNew.slug);
     expect(check1).toBeNull(); // Deleted!
 
+    // Verify that full catalog refresh does not resurrect the deleted product
+    const allProducts = await repository.getProducts({ pageSize: 100 });
+    const existsInList = allProducts.data.some((p) => p.id === oldOnlyNew.id || p.slug === oldOnlyNew.slug);
+    expect(existsInList).toBe(false);
+
     const check2 = await repository.getProductBySlug(oldFeatured.slug);
     expect(check2).not.toBeNull(); // Kept because it is featured!
 
@@ -79,5 +84,38 @@ describe('deleteOldNewArrivalProducts service', () => {
     if (check2) await repository.deleteProduct(check2.id);
     if (check3) await repository.deleteProduct(check3.id);
     if (check4) await repository.deleteProduct(check4.id);
+  });
+
+  it('guarantees unique IDs on rapid creation and permanently deletes products across refreshes', async () => {
+    const p1 = await repository.createProduct({
+      name: 'Rapid Shoes A',
+      price: 1500,
+      sku: 'RAPID-A',
+    });
+    const p2 = await repository.createProduct({
+      name: 'Rapid Shoes B',
+      price: 1600,
+      sku: 'RAPID-B',
+    });
+
+    expect(p1.id).not.toEqual(p2.id);
+
+    // Delete p1
+    const deleted = await repository.deleteProduct(p1.id);
+    expect(deleted).toBe(true);
+
+    // Simulate page refresh fetching products from scratch
+    const refreshed = await repository.getProducts({ pageSize: 100 });
+    expect(refreshed.data.some((p) => p.id === p1.id)).toBe(false);
+    expect(refreshed.data.some((p) => p.id === p2.id)).toBe(true);
+
+    const lookup1 = await repository.getProductBySlug(p1.slug);
+    expect(lookup1).toBeNull();
+
+    const lookup2 = await repository.getProductBySlug(p2.slug);
+    expect(lookup2).not.toBeNull();
+
+    // Clean up
+    await repository.deleteProduct(p2.id);
   });
 });

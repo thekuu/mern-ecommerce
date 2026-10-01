@@ -645,7 +645,7 @@ app.get('/api/products', async (req, res) => {
 
 app.get('/api/products/:slug', async (req, res) => {
   try {
-    res.setHeader('Cache-Control', 'public, max-age=120, stale-while-revalidate=600');
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
     const product = await repository.getProductBySlug(req.params.slug);
     if (!product) {
       return res.status(404).json({ error: 'Product not found' });
