@@ -158,6 +158,9 @@ export const useProductStore = create<ProductState>((set, get) => ({
   },
 
   remove: async (id: string) => {
+    const prevProducts = get().products;
+    const prevDetail = get().detailCache;
+
     set((s) => {
       const nextDetail = { ...s.detailCache };
       delete nextDetail[id];
@@ -170,7 +173,9 @@ export const useProductStore = create<ProductState>((set, get) => ({
     try {
       await deleteProduct(id);
     } catch (err) {
-      console.warn('API delete warning:', err);
+      // Revert optimistic delete on error
+      set({ products: prevProducts, detailCache: prevDetail });
+      throw err;
     }
   },
 

@@ -1081,6 +1081,11 @@ export const repository = {
             name: schema.products.name,
             categoryId: schema.products.categoryId,
             createdAt: schema.products.createdAt,
+            isNew: schema.products.isNew,
+            isFeatured: schema.products.isFeatured,
+            compareAtPrice: schema.products.compareAtPrice,
+            price: schema.products.price,
+            tags: schema.products.tags,
           })
           .from(schema.products)
           .where(
@@ -1092,6 +1097,22 @@ export const repository = {
           );
 
         for (const row of toDeleteRows) {
+          // Strictly verify marked ONLY as new:
+          // 1. Must not be featured
+          if (row.isFeatured) continue;
+
+          // 2. Must not be on sale (compareAtPrice > price)
+          const isSale = Boolean(row.compareAtPrice && Number(row.compareAtPrice) > Number(row.price));
+          if (isSale) continue;
+
+          // 3. Must not have other conflicting badge/status tags (featured, sale, bestseller, etc.)
+          const tags = Array.isArray(row.tags) ? (row.tags as string[]) : [];
+          const hasOtherBadges = tags.some((t) =>
+            ['featured', 'sale', 'bestseller', 'best-seller', 'popular', 'trending'].includes(String(t).toLowerCase())
+          );
+          if (hasOtherBadges) continue;
+
+          // Delete completely: product row + images + child relations + memoryStore
           const ok = await this.deleteProduct(row.id);
           if (ok) {
             deletedIds.add(row.id);
@@ -1108,6 +1129,14 @@ export const repository = {
       if (deletedIds.has(p.id)) return false;
       const isOnlyNew = Boolean(p.isNew) && !p.isFeatured;
       if (!isOnlyNew) return false;
+      const isSale = Boolean(p.compareAtPrice && Number(p.compareAtPrice) > Number(p.price));
+      if (isSale) return false;
+      const tags = Array.isArray(p.tags) ? p.tags : [];
+      const hasOtherBadges = tags.some((t) =>
+        ['featured', 'sale', 'bestseller', 'best-seller', 'popular', 'trending'].includes(String(t).toLowerCase())
+      );
+      if (hasOtherBadges) return false;
+
       const createdTime = p.createdAt ? new Date(p.createdAt).getTime() : NaN;
       return !isNaN(createdTime) && createdTime < cutoffMs;
     });
@@ -1126,6 +1155,7 @@ export const repository = {
     const cleanId = String(id).trim();
     let deleted = false;
     let categoryId: string | null = null;
+    let targetId: string | null = null;
 
     const db = getDb();
     if (db) {
@@ -1133,70 +1163,83 @@ export const repository = {
         const dbProduct = await db
           .select({ id: schema.products.id, categoryId: schema.products.categoryId })
           .from(schema.products)
-          .where(or(eq(schema.products.id, cleanId), eq(schema.products.slug, cleanId)))
+          .where(or(eq(schema.products.id, cleanId), eq(schema.products.slug, cleanId), ilike(schema.products.slug, cleanId)))
           .limit(1);
 
         if (dbProduct.length > 0) {
-          const targetId = dbProduct[0].id;
+          targetId = dbProduct[0].id;
           categoryId = dbProduct[0].categoryId;
+        } else {
+          targetId = cleanId;
+        }
 
-          // Safe unlinking from non-cascading or restrictive tables
-          await db
-            .update(schema.telegramDrafts)
-            .set({ importedProductId: null })
-            .where(eq(schema.telegramDrafts.importedProductId, targetId))
-            .catch((err) => console.warn('Unlink telegramDrafts note:', err));
-
+        // 1. Unlink order items (or remove orphan order items if product_id is NOT NULL)
+        try {
           await db
             .update(schema.orderItems)
             .set({ productId: null })
-            .where(eq(schema.orderItems.productId, targetId))
-            .catch((err) => console.warn('Unlink orderItems note:', err));
+            .where(or(eq(schema.orderItems.productId, targetId), eq(schema.orderItems.productId, cleanId)));
+        } catch {
+          try {
+            await db.execute(sql`ALTER TABLE order_items ALTER COLUMN product_id DROP NOT NULL;`);
+            await db.execute(sql`UPDATE order_items SET product_id = NULL WHERE product_id = ${targetId} OR product_id = ${cleanId};`);
+          } catch {
+            await db.delete(schema.orderItems).where(or(eq(schema.orderItems.productId, targetId), eq(schema.orderItems.productId, cleanId))).catch(() => {});
+          }
+        }
 
-          // Cascading child table cleanup
+        // 2. Unlink telegram drafts
+        try {
           await db
-            .delete(schema.productImages)
-            .where(eq(schema.productImages.productId, targetId))
-            .catch((err) => console.warn('Delete productImages note:', err));
+            .update(schema.telegramDrafts)
+            .set({ importedProductId: null })
+            .where(or(eq(schema.telegramDrafts.importedProductId, targetId), eq(schema.telegramDrafts.importedProductId, cleanId)));
+        } catch {
+          await db.execute(sql`UPDATE telegram_drafts SET imported_product_id = NULL WHERE imported_product_id = ${targetId} OR imported_product_id = ${cleanId};`).catch(() => {});
+        }
 
-          await db
-            .delete(schema.productVariants)
-            .where(eq(schema.productVariants.productId, targetId))
-            .catch((err) => console.warn('Delete productVariants note:', err));
+        // 3. Child tables: cartItems, wishlists, reviews, productVariants, productImages
+        await db.delete(schema.cartItems).where(or(eq(schema.cartItems.productId, targetId), eq(schema.cartItems.productId, cleanId))).catch((err) => console.warn('Delete cartItems note:', err));
+        await db.delete(schema.wishlists).where(or(eq(schema.wishlists.productId, targetId), eq(schema.wishlists.productId, cleanId))).catch((err) => console.warn('Delete wishlists note:', err));
+        await db.delete(schema.reviews).where(or(eq(schema.reviews.productId, targetId), eq(schema.reviews.productId, cleanId))).catch((err) => console.warn('Delete reviews note:', err));
+        await db.delete(schema.productVariants).where(or(eq(schema.productVariants.productId, targetId), eq(schema.productVariants.productId, cleanId))).catch((err) => console.warn('Delete productVariants note:', err));
+        await db.delete(schema.productImages).where(or(eq(schema.productImages.productId, targetId), eq(schema.productImages.productId, cleanId))).catch((err) => console.warn('Delete productImages note:', err));
 
-          await db
-            .delete(schema.cartItems)
-            .where(eq(schema.cartItems.productId, targetId))
-            .catch((err) => console.warn('Delete cartItems note:', err));
-
-          await db
-            .delete(schema.wishlists)
-            .where(eq(schema.wishlists.productId, targetId))
-            .catch((err) => console.warn('Delete wishlists note:', err));
-
-          await db
-            .delete(schema.reviews)
-            .where(eq(schema.reviews.productId, targetId))
-            .catch((err) => console.warn('Delete reviews note:', err));
-
-          // Delete product directly from Postgres database
-          await db.delete(schema.products).where(eq(schema.products.id, targetId));
+        // 4. Delete the product itself from PostgreSQL
+        try {
+          await db.delete(schema.products).where(or(eq(schema.products.id, targetId), eq(schema.products.id, cleanId), eq(schema.products.slug, cleanId)));
+          deleted = true;
+        } catch (delErr) {
+          console.warn('Drizzle delete products failed, trying raw SQL delete:', delErr);
+          await db.execute(sql`DELETE FROM products WHERE id = ${targetId} OR id = ${cleanId} OR slug = ${cleanId};`);
           deleted = true;
         }
       } catch (err) {
         console.error('Neon delete product error:', err);
-        // If DB deletion failed for a DB product, return false to prevent state desync
-        return false;
+        // Even if an unexpected error occurred, attempt direct raw SQL deletion
+        try {
+          await db.execute(sql`DELETE FROM products WHERE id = ${cleanId} OR slug = ${cleanId};`);
+          deleted = true;
+        } catch (rawErr) {
+          console.error('Raw SQL fallback delete error:', rawErr);
+        }
       }
     }
 
-    const idx = memoryStore.products.findIndex(
-      (p) => p.id === cleanId || p.slug === cleanId || String(p.id) === cleanId
+    // Now remove from in-memory store and file backup
+    const beforeLen = memoryStore.products.length;
+    const matchingProds = memoryStore.products.filter(
+      (p) => p.id === cleanId || p.slug === cleanId || (targetId && (p.id === targetId || p.slug === targetId))
     );
-    if (idx !== -1) {
-      const prod = memoryStore.products[idx];
-      if (!categoryId) categoryId = prod.categoryId;
-      memoryStore.products.splice(idx, 1);
+    if (!categoryId && matchingProds.length > 0) {
+      categoryId = matchingProds[0].categoryId;
+    }
+
+    memoryStore.products = memoryStore.products.filter(
+      (p) => p.id !== cleanId && p.slug !== cleanId && (!targetId || (p.id !== targetId && p.slug !== targetId))
+    );
+
+    if (memoryStore.products.length < beforeLen) {
       savePersistedProducts(memoryStore.products);
       deleted = true;
     }
@@ -1204,15 +1247,12 @@ export const repository = {
     if (categoryId) {
       const cat = memoryStore.categories.find((c) => c.id === categoryId);
       if (cat && cat.productCount > 0) {
-        cat.productCount -= 1;
+        cat.productCount = Math.max(0, cat.productCount - 1);
         savePersistedCategories(memoryStore.categories);
       }
       if (db) {
         try {
-          const dbCat = await db.select().from(schema.categories).where(eq(schema.categories.id, categoryId)).limit(1);
-          if (dbCat.length > 0 && dbCat[0].productCount > 0) {
-            await db.update(schema.categories).set({ productCount: Math.max(0, dbCat[0].productCount - 1) }).where(eq(schema.categories.id, categoryId));
-          }
+          await db.execute(sql`UPDATE categories SET product_count = GREATEST(0, product_count - 1) WHERE id = ${categoryId};`);
         } catch (err) {
           console.warn('Neon category count decrement note:', err);
         }

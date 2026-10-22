@@ -59,6 +59,7 @@ export default function AdminProducts() {
     setIsDeleting(true);
     try {
       await remove(deleteId);
+      await fetchProducts(true);
       toast.success(productToDelete ? `Deleted "${productToDelete.name}"` : 'Product deleted');
     } catch (err: any) {
       toast.error('Failed to delete product: ' + (err.message || 'Error'));

@@ -118,4 +118,74 @@ describe('deleteOldNewArrivalProducts service', () => {
     // Clean up
     await repository.deleteProduct(p2.id);
   });
+
+  it('preserves products marked as new if they are also on sale or have other badges/tags', async () => {
+    const elevenDaysAgo = new Date(Date.now() - 11 * 24 * 60 * 60 * 1000).toISOString();
+
+    // 1. Product on Sale (compareAtPrice > price) -> MUST NOT BE DELETED
+    const oldSale = await repository.createProduct({
+      name: 'Old Sale Sneakers',
+      slug: 'old-sale-sneakers-' + Date.now(),
+      description: 'Sale product',
+      price: 2000,
+      compareAtPrice: 3000,
+      currency: 'ETB',
+      sku: 'TEST-OLD-SALE',
+      isNew: true,
+      isFeatured: false,
+      createdAt: elevenDaysAgo,
+    });
+
+    // 2. Product with 'bestseller' tag -> MUST NOT BE DELETED
+    const oldBestseller = await repository.createProduct({
+      name: 'Old Bestseller Hoodie',
+      slug: 'old-bestseller-hoodie-' + Date.now(),
+      description: 'Bestseller product',
+      price: 1800,
+      currency: 'ETB',
+      sku: 'TEST-OLD-BEST',
+      isNew: true,
+      isFeatured: false,
+      tags: ['bestseller'],
+      createdAt: elevenDaysAgo,
+    });
+
+    // 3. Product marked ONLY as new (>10 days old) -> MUST BE DELETED
+    const oldOnlyNew = await repository.createProduct({
+      name: 'Old Qualifying Shoe',
+      slug: 'old-qualifying-shoe-' + Date.now(),
+      description: 'Clean me up',
+      price: 1900,
+      currency: 'ETB',
+      sku: 'TEST-CLEANUP-TARGET',
+      isNew: true,
+      isFeatured: false,
+      createdAt: elevenDaysAgo,
+    });
+
+    // Run cleanup
+    const deletedCount = await repository.deleteOldNewArrivalProducts(10);
+    expect(deletedCount).toBeGreaterThanOrEqual(1);
+
+    // Verify oldOnlyNew is completely deleted
+    const checkTarget = await repository.getProductBySlug(oldOnlyNew.slug);
+    expect(checkTarget).toBeNull();
+
+    // Verify catalog does not include oldOnlyNew in refreshed list
+    const catalog = await repository.getProducts({ pageSize: 100 });
+    expect(catalog.data.some((p) => p.id === oldOnlyNew.id || p.slug === oldOnlyNew.slug)).toBe(false);
+
+    // Verify sale product is preserved
+    const checkSale = await repository.getProductBySlug(oldSale.slug);
+    expect(checkSale).not.toBeNull();
+    expect(checkSale?.isNew).toBe(true);
+
+    // Verify bestseller product is preserved
+    const checkBestseller = await repository.getProductBySlug(oldBestseller.slug);
+    expect(checkBestseller).not.toBeNull();
+
+    // Cleanup test products
+    if (checkSale) await repository.deleteProduct(checkSale.id);
+    if (checkBestseller) await repository.deleteProduct(checkBestseller.id);
+  });
 });
