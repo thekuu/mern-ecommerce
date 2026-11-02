@@ -39,7 +39,7 @@ export interface SeedData {
     firstName: string;
     lastName: string;
     avatar?: string;
-    role: 'customer' | 'admin' | 'moderator';
+    role: 'customer' | 'admin' | 'moderator' | 'superadmin';
   }>;
   settings: Record<string, any>;
   telegramSources: Array<{
@@ -48,6 +48,7 @@ export interface SeedData {
     title: string;
     isActive: boolean;
     lastScrapedAt?: string;
+    lastScrapedMessageId?: number;
   }>;
   telegramDrafts: Array<{
     id: string;
@@ -57,7 +58,7 @@ export interface SeedData {
     rawCaption: string;
     images: string[];
     parsed: Record<string, any>;
-    status: 'draft' | 'imported' | 'archived';
+    status: 'draft' | 'imported' | 'archived' | 'pending';
     createdAt: string;
   }>;
   orders: Array<any>;

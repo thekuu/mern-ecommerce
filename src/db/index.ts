@@ -169,7 +169,7 @@ interface InMemoryStore {
   categories: typeof initialCategories;
   products: typeof initialProducts;
   users: typeof initialUsers;
-  userRoles: Array<{ id: string; userId: string; role: 'customer' | 'admin' | 'moderator' }>;
+  userRoles: Array<{ id: string; userId: string; role: 'customer' | 'admin' | 'moderator' | 'superadmin' }>;
   profiles: Array<{ id: string; userId: string; phone?: string; subcity?: string; woreda?: string; street?: string; city: string; country: string }>;
   orders: typeof initialOrders;
   settings: Record<string, any>;
@@ -1497,17 +1497,17 @@ export const repository = {
   },
 
   async createUser(data: {
-    username: string;
-    fullName: string;
+    username?: string;
+    fullName?: string;
     email?: string;
     passwordHash?: string;
     firstName?: string;
     lastName?: string;
     avatar?: string;
-    role?: 'customer' | 'admin' | 'moderator';
+    role?: 'customer' | 'admin' | 'moderator' | 'superadmin';
   }) {
-    const cleanUsername = data.username.trim().toLowerCase();
-    const cleanFullName = data.fullName.trim();
+    const cleanUsername = (data.username || (data.email ? data.email.split('@')[0] : `user_${Date.now().toString(36)}`)).trim().toLowerCase();
+    const cleanFullName = (data.fullName || `${data.firstName || ''} ${data.lastName || ''}`.trim() || cleanUsername).trim();
     
     // Check if username already taken in memoryStore
     const existing = memoryStore.users.find(
@@ -1518,7 +1518,7 @@ export const repository = {
     }
 
     const nameParts = cleanFullName.split(' ');
-    const firstName = data.firstName || nameParts[0] || data.username;
+    const firstName = data.firstName || nameParts[0] || cleanUsername;
     const lastName = data.lastName || (nameParts.length > 1 ? nameParts.slice(1).join(' ') : '');
     const email = (data.email || `${cleanUsername}@shegaddis.local`).toLowerCase();
 
@@ -1568,9 +1568,13 @@ export const repository = {
     };
     memoryStore.users.push(newUser);
     memoryStore.userRoles.push({ id: `ur-${id}`, userId: id, role });
-    memoryStore.profiles.push({ id: `prof-${id}`, userId: id, city: 'Addis Ababa', country: 'ET' });
+    const profile = { id: `prof-${id}`, userId: id, city: 'Addis Ababa', country: 'ET' };
+    memoryStore.profiles.push(profile);
 
-    return newUser;
+    return {
+      ...newUser,
+      profile,
+    };
   },
 
   async getAllUsers() {
@@ -2080,7 +2084,7 @@ export const repository = {
         console.warn('Neon getTelegramDrafts note:', err);
       }
     }
-    return memoryStore.telegramDrafts.filter((d) => d.status === 'draft' || d.status === 'pending');
+    return memoryStore.telegramDrafts.filter((d) => d.status === 'draft' || (d.status as string) === 'pending');
   },
 
   async updateTelegramDraft(id: string, parsed: Record<string, any>, images?: string[]) {
@@ -2442,9 +2446,9 @@ export const repository = {
           const rawSplits = html.split(/<div[^>]*class="[^"]*tgme_widget_message_wrap[^"]*"[^>]*>/i);
           const candidateBlocks = rawSplits.length > 1 
             ? rawSplits.slice(1) 
-            : html.split(/(?=<div[^>]*class="[^"]*tgme_widget_message(?:\s|")[^>]*>)/i).filter((b) => b.includes('data-post='));
+            : html.split(/(?=<div[^>]*class="[^"]*tgme_widget_message(?:\s|")[^>]*>)/i).filter((b: string) => b.includes('data-post='));
 
-          const messageBlocks = candidateBlocks.filter((b) => b.includes('data-post=') || b.includes('tgme_widget_message_text'));
+          const messageBlocks = candidateBlocks.filter((b: string) => b.includes('data-post=') || b.includes('tgme_widget_message_text'));
 
           if (messageBlocks.length === 0) {
             errors.push(`@${targetChannel}: No public posts found at t.me/s/${targetChannel}`);

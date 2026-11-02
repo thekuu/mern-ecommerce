@@ -2,9 +2,9 @@ import { pgTable, text, timestamp, boolean, integer, doublePrecision, jsonb, pgE
 import { relations } from 'drizzle-orm';
 
 // Enums
-export const roleEnum = pgEnum('user_role', ['customer', 'admin', 'moderator']);
+export const roleEnum = pgEnum('user_role', ['customer', 'admin', 'moderator', 'superadmin']);
 export const orderStatusEnum = pgEnum('order_status', ['pending', 'processing', 'shipped', 'delivered', 'cancelled']);
-export const draftStatusEnum = pgEnum('draft_status', ['draft', 'imported', 'archived']);
+export const draftStatusEnum = pgEnum('draft_status', ['draft', 'imported', 'archived', 'pending']);
 
 // 1. Users
 export const users = pgTable('users', {

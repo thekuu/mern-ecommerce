@@ -59,7 +59,7 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 interface AuthUserPayload {
   userId: string;
   email: string;
-  role: 'customer' | 'admin' | 'moderator';
+  role: 'customer' | 'admin' | 'moderator' | 'superadmin';
 }
 
 declare global {
@@ -224,7 +224,7 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
 
     // Direct Unsigned HTTP Upload Fallback to Cloudinary CDN
     const formData = new FormData();
-    const blob = new Blob([req.file.buffer], { type: req.file.mimetype });
+    const blob = new Blob([new Uint8Array(req.file.buffer)], { type: req.file.mimetype });
     formData.append('file', blob, req.file.originalname);
     formData.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
     if (folder) {
@@ -516,13 +516,23 @@ app.post('/api/auth/google', authLimiter, async (req, res) => {
 
   let user = await repository.findUserByEmail(email);
   if (!user) {
+    const fName = firstName || 'Google';
+    const lName = lastName || 'User';
+    const fullName = `${fName} ${lName}`.trim();
+    const baseUsername = email.split('@')[0].replace(/[^a-zA-Z0-9_-]/g, '') || `user${Date.now().toString(36)}`;
     user = await repository.createUser({
+      username: baseUsername,
+      fullName,
       email,
-      firstName: firstName || 'Google',
-      lastName: lastName || 'User',
+      firstName: fName,
+      lastName: lName,
       avatar,
       role: 'customer',
     });
+  }
+
+  if (!user) {
+    return res.status(500).json({ error: 'Failed to authenticate user' });
   }
 
   const token = generateToken({ userId: user.id, email: user.email, role: user.role });
@@ -562,7 +572,7 @@ app.post('/api/categories', requireAdmin, async (req, res) => {
 
 app.put('/api/categories/:id', requireAdmin, async (req, res) => {
   try {
-    const updated = await repository.updateCategory(req.params.id, req.body);
+    const updated = await repository.updateCategory(req.params.id as string, req.body);
     if (!updated) return res.status(404).json({ error: 'Category not found' });
     res.json(updated);
   } catch (err: any) {
@@ -571,7 +581,7 @@ app.put('/api/categories/:id', requireAdmin, async (req, res) => {
 });
 
 app.delete('/api/categories/:id', requireAdmin, async (req, res) => {
-  const success = await repository.deleteCategory(req.params.id);
+  const success = await repository.deleteCategory(req.params.id as string);
   if (!success) return res.status(404).json({ error: 'Category not found' });
   res.json({ message: 'Category deleted' });
 });
@@ -646,7 +656,7 @@ app.get('/api/products', async (req, res) => {
 app.get('/api/products/:slug', async (req, res) => {
   try {
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-    const product = await repository.getProductBySlug(req.params.slug);
+    const product = await repository.getProductBySlug(req.params.slug as string);
     if (!product) {
       return res.status(404).json({ error: 'Product not found' });
     }
@@ -667,7 +677,7 @@ app.post('/api/products', requireAdmin, async (req, res) => {
 
 app.put('/api/products/:id', requireAdmin, async (req, res) => {
   try {
-    const updated = await repository.updateProduct(req.params.id, req.body);
+    const updated = await repository.updateProduct(req.params.id as string, req.body);
     if (!updated) return res.status(404).json({ error: 'Product not found' });
     res.json(updated);
   } catch (err: any) {
@@ -676,7 +686,7 @@ app.put('/api/products/:id', requireAdmin, async (req, res) => {
 });
 
 app.delete('/api/products/:id', requireAdmin, async (req, res) => {
-  const deleted = await repository.deleteProduct(req.params.id);
+  const deleted = await repository.deleteProduct(req.params.id as string);
   if (!deleted) return res.status(404).json({ error: 'Product not found' });
   res.json({ message: 'Product deleted' });
 });
@@ -749,7 +759,7 @@ app.get('/api/orders', requireAuth, async (req, res) => {
 
 app.get('/api/orders/:id', requireAuth, async (req, res) => {
   try {
-    const order = await repository.getOrderById(req.params.id);
+    const order = await repository.getOrderById(req.params.id as string);
     if (!order) return res.status(404).json({ error: 'Order not found' });
 
     // Ensure customer only views their own order
@@ -776,7 +786,17 @@ app.post('/api/orders', requireAuth, async (req, res) => {
       subcity: data.subcity,
       woreda: data.woreda,
       street: data.street,
-      items: data.items,
+      items: data.items.map((i) => ({
+        productId: i.productId,
+        productName: i.productName,
+        variantKey: i.variantKey,
+        size: i.size,
+        colorName: i.colorName,
+        colorHex: i.colorHex,
+        quantity: i.quantity,
+        price: i.price,
+        imageUrl: i.imageUrl,
+      })),
       deliveryDate: data.deliveryDate,
       deliveryTimeSlot: data.deliveryTimeSlot,
       paymentMethod: data.paymentMethod,
@@ -793,7 +813,7 @@ app.patch('/api/orders/:id/status', requireAdmin, async (req, res) => {
   try {
     const { status } = req.body;
     if (!status) return res.status(400).json({ error: 'Status is required' });
-    const order = await repository.updateOrderStatus(req.params.id, status);
+    const order = await repository.updateOrderStatus(req.params.id as string, status);
     res.json(order);
   } catch (err: any) {
     res.status(400).json({ error: err.message });
@@ -806,13 +826,13 @@ app.post('/api/orders/:id/receipt', requireAuth, async (req, res) => {
     if (!receiptUrl) return res.status(400).json({ error: 'Receipt URL or payload is required' });
     
     // Check ownership to prevent IDOR
-    const existingOrder = await repository.getOrderById(req.params.id);
+    const existingOrder = await repository.getOrderById(req.params.id as string);
     if (!existingOrder) return res.status(404).json({ error: 'Order not found' });
     if (req.user?.role !== 'admin' && req.user?.role !== 'superadmin' && existingOrder.userId && existingOrder.userId !== req.user?.userId) {
       return res.status(403).json({ error: 'Access denied' });
     }
 
-    const order = await repository.attachReceipt(req.params.id, receiptUrl);
+    const order = await repository.attachReceipt(req.params.id as string, receiptUrl);
     res.json({ message: 'Receipt attached successfully', order });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -855,7 +875,7 @@ app.post('/api/telegram/sources', requireAdmin, async (req, res) => {
 });
 
 app.delete('/api/telegram/sources/:id', requireAdmin, async (req, res) => {
-  const success = await repository.deleteTelegramSource(req.params.id);
+  const success = await repository.deleteTelegramSource(req.params.id as string);
   if (!success) return res.status(404).json({ error: 'Source not found' });
   res.json({ message: 'Source deleted' });
 });
@@ -886,7 +906,7 @@ app.post('/api/telegram/scrape', requireAdmin, async (req, res) => {
 app.put('/api/telegram/drafts/:id', requireAdmin, async (req, res) => {
   try {
     const { parsed, images } = req.body;
-    const draft = await repository.updateTelegramDraft(req.params.id, parsed, images);
+    const draft = await repository.updateTelegramDraft(req.params.id as string, parsed, images);
     if (!draft) return res.status(404).json({ error: 'Draft not found' });
     res.json(draft);
   } catch (err: any) {
@@ -905,7 +925,7 @@ app.delete('/api/telegram/drafts', requireAdmin, async (req, res) => {
 
 app.delete('/api/telegram/drafts/:id', requireAdmin, async (req, res) => {
   try {
-    await repository.deleteTelegramDraft(req.params.id);
+    await repository.deleteTelegramDraft(req.params.id as string);
     res.json({ message: 'Draft deleted successfully' });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -997,7 +1017,7 @@ app.post('/api/telegram/drafts/:id/import', requireAdmin, async (req, res) => {
       await repository.updateTelegramDraft(draft.id, draft.parsed, uploadedImages);
     }
     
-    const result = await repository.importDraftAsProduct(req.params.id, primaryIndex);
+    const result = await repository.importDraftAsProduct(req.params.id as string, primaryIndex);
     res.status(201).json(result);
   } catch (err: any) {
     res.status(400).json({ error: err.message });
@@ -1017,7 +1037,7 @@ app.patch('/api/users/:id/role', requireSuperAdmin, async (req, res) => {
     if (!['customer', 'admin', 'moderator', 'superadmin'].includes(role)) {
       return res.status(400).json({ error: 'Invalid role' });
     }
-    const updated = await repository.updateUserRole(req.params.id, role);
+    const updated = await repository.updateUserRole(req.params.id as string, role);
     res.json(updated);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -1028,7 +1048,7 @@ app.patch('/api/users/:id/reset-password', requireSuperAdmin, async (req, res) =
   try {
     const salt = await bcrypt.genSalt(10);
     const passwordHash = await bcrypt.hash('0000', salt);
-    await repository.updateUserPassword(req.params.id, passwordHash);
+    await repository.updateUserPassword(req.params.id as string, passwordHash);
     res.json({ message: 'Password reset to 0000 successfully' });
   } catch (err: any) {
     res.status(500).json({ error: err.message });

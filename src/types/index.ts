@@ -24,6 +24,8 @@ export interface Product {
   sku: string;
   isNew?: boolean;
   isFeatured?: boolean;
+  onSale?: boolean;
+  categoryId?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -51,12 +53,15 @@ export interface Category {
 }
 
 export interface CartItem {
-  product: Product;
+  product?: Product;
+  productName?: string;
+  price?: number;
   quantity: number;
   /** Composite key identifying this variant line (product + size + color) */
   variantKey: string;
   size?: string;
   color?: ProductColor;
+  colorName?: string;
   imageUrl?: string;
 }
 
