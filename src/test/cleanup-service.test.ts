@@ -188,4 +188,35 @@ describe('deleteOldNewArrivalProducts service', () => {
     if (checkSale) await repository.deleteProduct(checkSale.id);
     if (checkBestseller) await repository.deleteProduct(checkBestseller.id);
   });
+
+  it('guarantees that products marked only as new and older than 10 days never leak into catalog with fallback images', async () => {
+    const twelveDaysAgo = new Date(Date.now() - 12 * 24 * 60 * 60 * 1000).toISOString();
+
+    const orphanProd = await repository.createProduct({
+      name: 'Orphan Stripped Product',
+      slug: 'orphan-stripped-' + Date.now(),
+      description: 'Product whose images were previously stripped',
+      price: 2100,
+      currency: 'ETB',
+      sku: 'TEST-ORPHAN-STRIP',
+      isNew: true,
+      isFeatured: false,
+      createdAt: twelveDaysAgo,
+      images: [],
+    });
+
+    // Cleanup service must clean this product up completely
+    const deletedCount = await repository.deleteOldNewArrivalProducts(10);
+    expect(deletedCount).toBeGreaterThanOrEqual(1);
+
+    // Verify it is not in database / memoryStore
+    const checkOrphan = await repository.getProductBySlug(orphanProd.slug);
+    expect(checkOrphan).toBeNull();
+
+    // Verify catalog does not include this product with fallback image
+    const catalog = await repository.getProducts({ pageSize: 100 });
+    const exists = catalog.data.some((p) => p.id === orphanProd.id || p.slug === orphanProd.slug);
+    expect(exists).toBe(false);
+  });
 });
+

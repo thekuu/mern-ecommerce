@@ -1,1 +1,31 @@
-[]
+[
+  {
+    "id": "prod-mvyy7yw8-e2o38u",
+    "name": "Recent Only New Shoes",
+    "slug": "recent-only-new-shoes-1793605191272",
+    "description": "Test product",
+    "shortDescription": "Test product",
+    "price": 2200,
+    "compareAtPrice": null,
+    "currency": "ETB",
+    "categoryId": "cat-clothes",
+    "tags": [],
+    "rating": 5,
+    "reviewCount": 0,
+    "stock": 10,
+    "sku": "TEST-RECENT-NEW",
+    "isNew": true,
+    "isFeatured": false,
+    "createdAt": "2026-10-31T07:39:51.265Z",
+    "updatedAt": "2026-11-02T07:39:51.272Z",
+    "images": [
+      {
+        "id": "img-1793605191272",
+        "url": "https://images.unsplash.com/photo-1521572163474-6864f9cf17ab?w=800&h=800&fit=crop",
+        "alt": "Recent Only New Shoes",
+        "isPrimary": true
+      }
+    ],
+    "variants": []
+  }
+]

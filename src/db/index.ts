@@ -260,12 +260,40 @@ export async function initNeonDatabase() {
       await db.delete(schema.orders).where(eq(schema.orders.id, oId)).catch(() => {});
     }
 
+    // Ensure order_items.product_id is nullable in PostgreSQL so unlinking works cleanly
+    await db.execute(sql`ALTER TABLE order_items ALTER COLUMN product_id DROP NOT NULL;`).catch(() => {});
+
     // Load all real products with images & variants from Neon Postgres
     const allDbProds = await db.select().from(schema.products);
     const allDbImgs = await db.select().from(schema.productImages);
     const allDbVars = await db.select().from(schema.productVariants);
 
-    memoryStore.products = allDbProds.map((p) => {
+    const nowTenDaysAgoMs = Date.now() - 10 * 24 * 60 * 60 * 1000;
+
+    memoryStore.products = allDbProds
+      .filter((p) => {
+        // Exclude products marked only as new that are older than 10 days, or abandoned 0-image products
+        const createdTime = p.createdAt ? new Date(p.createdAt).getTime() : NaN;
+        const isOlderThan10Days = !isNaN(createdTime) && createdTime < nowTenDaysAgoMs;
+        const isOnlyNew = Boolean(p.isNew) && !p.isFeatured;
+        const isSale = Boolean(p.compareAtPrice && Number(p.compareAtPrice) > Number(p.price));
+        const tags = Array.isArray(p.tags) ? (p.tags as string[]) : [];
+        const hasOtherBadges = tags.some((t) =>
+          ['featured', 'sale', 'bestseller', 'best-seller', 'popular', 'trending'].includes(String(t).toLowerCase())
+        );
+
+        if (isOlderThan10Days && isOnlyNew && !isSale && !hasOtherBadges) {
+          return false;
+        }
+
+        const imgs = allDbImgs.filter((img) => img.productId === p.id);
+        if (isOlderThan10Days && imgs.length === 0 && !p.isFeatured && !isSale && !hasOtherBadges) {
+          return false;
+        }
+
+        return true;
+      })
+      .map((p) => {
       const imgs = allDbImgs
         .filter((img) => img.productId === p.id)
         .sort((a, b) => a.sortOrder - b.sortOrder)
@@ -701,7 +729,32 @@ export const repository = {
           const allDbImgs = await db.select().from(schema.productImages);
           const allDbVars = await db.select().from(schema.productVariants);
 
-          memoryStore.products = allDbProds.map((p) => {
+          const nowTenDaysAgoMs = Date.now() - 10 * 24 * 60 * 60 * 1000;
+
+          memoryStore.products = allDbProds
+            .filter((p) => {
+              // Exclude products marked only as new that are older than 10 days, or abandoned 0-image products
+              const createdTime = p.createdAt ? new Date(p.createdAt).getTime() : NaN;
+              const isOlderThan10Days = !isNaN(createdTime) && createdTime < nowTenDaysAgoMs;
+              const isOnlyNew = Boolean(p.isNew) && !p.isFeatured;
+              const isSale = Boolean(p.compareAtPrice && Number(p.compareAtPrice) > Number(p.price));
+              const tags = Array.isArray(p.tags) ? (p.tags as string[]) : [];
+              const hasOtherBadges = tags.some((t) =>
+                ['featured', 'sale', 'bestseller', 'best-seller', 'popular', 'trending'].includes(String(t).toLowerCase())
+              );
+
+              if (isOlderThan10Days && isOnlyNew && !isSale && !hasOtherBadges) {
+                return false;
+              }
+
+              const imgs = allDbImgs.filter((img) => img.productId === p.id);
+              if (isOlderThan10Days && imgs.length === 0 && !p.isFeatured && !isSale && !hasOtherBadges) {
+                return false;
+              }
+
+              return true;
+            })
+            .map((p) => {
             const imgs = allDbImgs
               .filter((img) => img.productId === p.id)
               .sort((a, b) => a.sortOrder - b.sortOrder)
@@ -1074,7 +1127,7 @@ export const repository = {
     if (db) {
       try {
         // Query Postgres for products marked as ONLY new (isNew = true AND isFeatured = false/null)
-        // and created more than daysOld days ago
+        // and created more than daysOld days ago, OR any product >10 days old that has zero images in product_images
         const toDeleteRows = await db
           .select({
             id: schema.products.id,
@@ -1089,17 +1142,23 @@ export const repository = {
           })
           .from(schema.products)
           .where(
-            and(
-              eq(schema.products.isNew, true),
-              or(eq(schema.products.isFeatured, false), sql`${schema.products.isFeatured} IS NULL`),
-              lt(schema.products.createdAt, cutoffDate)
+            or(
+              and(
+                eq(schema.products.isNew, true),
+                or(eq(schema.products.isFeatured, false), sql`${schema.products.isFeatured} IS NULL`),
+                lt(schema.products.createdAt, cutoffDate)
+              ),
+              and(
+                lt(schema.products.createdAt, cutoffDate),
+                sql`NOT EXISTS (SELECT 1 FROM product_images WHERE product_images.product_id = products.id)`
+              )
             )
           );
 
         for (const row of toDeleteRows) {
           // Strictly verify marked ONLY as new:
           // 1. Must not be featured
-          if (row.isFeatured) continue;
+          if (row.isFeatured && Boolean(row.isFeatured)) continue;
 
           // 2. Must not be on sale (compareAtPrice > price)
           const isSale = Boolean(row.compareAtPrice && Number(row.compareAtPrice) > Number(row.price));
@@ -1127,7 +1186,8 @@ export const repository = {
     // Also check memoryStore to keep in-memory data / local fallback clean
     const toDeleteFromMemory = memoryStore.products.filter((p) => {
       if (deletedIds.has(p.id)) return false;
-      const isOnlyNew = Boolean(p.isNew) && !p.isFeatured;
+      if (p.isFeatured) return false;
+      const isOnlyNew = Boolean(p.isNew);
       if (!isOnlyNew) return false;
       const isSale = Boolean(p.compareAtPrice && Number(p.compareAtPrice) > Number(p.price));
       if (isSale) return false;
@@ -1161,63 +1221,92 @@ export const repository = {
     if (db) {
       try {
         const dbProduct = await db
-          .select({ id: schema.products.id, categoryId: schema.products.categoryId })
+          .select({ id: schema.products.id, categoryId: schema.products.categoryId, slug: schema.products.slug })
           .from(schema.products)
           .where(or(eq(schema.products.id, cleanId), eq(schema.products.slug, cleanId), ilike(schema.products.slug, cleanId)))
           .limit(1);
 
+        const targetProdId = dbProduct.length > 0 ? dbProduct[0].id : cleanId;
+        const targetSlug = dbProduct.length > 0 ? dbProduct[0].slug : cleanId;
         if (dbProduct.length > 0) {
-          targetId = dbProduct[0].id;
           categoryId = dbProduct[0].categoryId;
-        } else {
-          targetId = cleanId;
         }
+        targetId = targetProdId;
 
-        // 1. Unlink order items (or remove orphan order items if product_id is NOT NULL)
-        try {
-          await db
-            .update(schema.orderItems)
-            .set({ productId: null })
-            .where(or(eq(schema.orderItems.productId, targetId), eq(schema.orderItems.productId, cleanId)));
-        } catch {
-          try {
-            await db.execute(sql`ALTER TABLE order_items ALTER COLUMN product_id DROP NOT NULL;`);
-            await db.execute(sql`UPDATE order_items SET product_id = NULL WHERE product_id = ${targetId} OR product_id = ${cleanId};`);
-          } catch {
-            await db.delete(schema.orderItems).where(or(eq(schema.orderItems.productId, targetId), eq(schema.orderItems.productId, cleanId))).catch(() => {});
-          }
-        }
+        // Perform ATOMIC deletion in PostgreSQL using DO $$ ... END $$ block
+        // Child deletions and parent deletion are in the SAME block so if parent delete fails,
+        // child rows (including images) are NOT orphaned or partially deleted!
+        await db.execute(sql`
+          DO $$
+          DECLARE
+            v_id text := ${targetProdId};
+            v_clean text := ${cleanId};
+            v_slug text := ${targetSlug};
+          BEGIN
+            -- 1. Unlink order items (set null if nullable, otherwise delete referencing items)
+            BEGIN
+              UPDATE order_items SET product_id = NULL WHERE product_id = v_id OR product_id = v_clean;
+            EXCEPTION WHEN OTHERS THEN
+              BEGIN
+                DELETE FROM order_items WHERE product_id = v_id OR product_id = v_clean;
+              EXCEPTION WHEN OTHERS THEN
+                NULL;
+              END;
+            END;
 
-        // 2. Unlink telegram drafts
-        try {
-          await db
-            .update(schema.telegramDrafts)
-            .set({ importedProductId: null })
-            .where(or(eq(schema.telegramDrafts.importedProductId, targetId), eq(schema.telegramDrafts.importedProductId, cleanId)));
-        } catch {
-          await db.execute(sql`UPDATE telegram_drafts SET imported_product_id = NULL WHERE imported_product_id = ${targetId} OR imported_product_id = ${cleanId};`).catch(() => {});
-        }
+            -- 2. Unlink telegram drafts
+            BEGIN
+              UPDATE telegram_drafts SET imported_product_id = NULL WHERE imported_product_id = v_id OR imported_product_id = v_clean;
+            EXCEPTION WHEN OTHERS THEN
+              NULL;
+            END;
 
-        // 3. Child tables: cartItems, wishlists, reviews, productVariants, productImages
-        await db.delete(schema.cartItems).where(or(eq(schema.cartItems.productId, targetId), eq(schema.cartItems.productId, cleanId))).catch((err) => console.warn('Delete cartItems note:', err));
-        await db.delete(schema.wishlists).where(or(eq(schema.wishlists.productId, targetId), eq(schema.wishlists.productId, cleanId))).catch((err) => console.warn('Delete wishlists note:', err));
-        await db.delete(schema.reviews).where(or(eq(schema.reviews.productId, targetId), eq(schema.reviews.productId, cleanId))).catch((err) => console.warn('Delete reviews note:', err));
-        await db.delete(schema.productVariants).where(or(eq(schema.productVariants.productId, targetId), eq(schema.productVariants.productId, cleanId))).catch((err) => console.warn('Delete productVariants note:', err));
-        await db.delete(schema.productImages).where(or(eq(schema.productImages.productId, targetId), eq(schema.productImages.productId, cleanId))).catch((err) => console.warn('Delete productImages note:', err));
+            -- 3. Delete dependent child records
+            DELETE FROM cart_items WHERE product_id = v_id OR product_id = v_clean;
+            DELETE FROM wishlists WHERE product_id = v_id OR product_id = v_clean;
+            DELETE FROM reviews WHERE product_id = v_id OR product_id = v_clean;
+            DELETE FROM product_variants WHERE product_id = v_id OR product_id = v_clean;
+            DELETE FROM product_images WHERE product_id = v_id OR product_id = v_clean;
 
-        // 4. Delete the product itself from PostgreSQL
-        try {
-          await db.delete(schema.products).where(or(eq(schema.products.id, targetId), eq(schema.products.id, cleanId), eq(schema.products.slug, cleanId)));
+            -- 4. Delete the parent product record
+            DELETE FROM products WHERE id = v_id OR id = v_clean OR slug = v_clean OR slug = v_slug;
+          END $$;
+        `);
+
+        // Verify product was successfully removed from Postgres
+        const checkStillExists = await db
+          .select({ id: schema.products.id })
+          .from(schema.products)
+          .where(or(eq(schema.products.id, targetProdId), eq(schema.products.id, cleanId), eq(schema.products.slug, cleanId)))
+          .limit(1);
+
+        if (checkStillExists.length === 0) {
           deleted = true;
-        } catch (delErr) {
-          console.warn('Drizzle delete products failed, trying raw SQL delete:', delErr);
-          await db.execute(sql`DELETE FROM products WHERE id = ${targetId} OR id = ${cleanId} OR slug = ${cleanId};`);
+          console.log(`✅ Product '${cleanId}' (${targetProdId}) completely purged from Postgres`);
+        } else {
+          // If for any driver reason the PL/pgSQL block didn't delete, attempt individual unlinks & direct delete
+          console.warn(`⚠️ Retrying direct SQL purge for product '${cleanId}'`);
+          await db.execute(sql`UPDATE order_items SET product_id = NULL WHERE product_id = ${targetProdId} OR product_id = ${cleanId};`).catch(() => {});
+          await db.execute(sql`UPDATE telegram_drafts SET imported_product_id = NULL WHERE imported_product_id = ${targetProdId} OR imported_product_id = ${cleanId};`).catch(() => {});
+          await db.execute(sql`DELETE FROM cart_items WHERE product_id = ${targetProdId} OR product_id = ${cleanId};`).catch(() => {});
+          await db.execute(sql`DELETE FROM wishlists WHERE product_id = ${targetProdId} OR product_id = ${cleanId};`).catch(() => {});
+          await db.execute(sql`DELETE FROM reviews WHERE product_id = ${targetProdId} OR product_id = ${cleanId};`).catch(() => {});
+          await db.execute(sql`DELETE FROM product_variants WHERE product_id = ${targetProdId} OR product_id = ${cleanId};`).catch(() => {});
+          await db.execute(sql`DELETE FROM product_images WHERE product_id = ${targetProdId} OR product_id = ${cleanId};`).catch(() => {});
+          await db.execute(sql`DELETE FROM products WHERE id = ${targetProdId} OR id = ${cleanId} OR slug = ${cleanId};`);
           deleted = true;
         }
       } catch (err) {
         console.error('Neon delete product error:', err);
-        // Even if an unexpected error occurred, attempt direct raw SQL deletion
+        // Fallback direct delete
         try {
+          await db.execute(sql`UPDATE order_items SET product_id = NULL WHERE product_id = ${cleanId};`).catch(() => {});
+          await db.execute(sql`UPDATE telegram_drafts SET imported_product_id = NULL WHERE imported_product_id = ${cleanId};`).catch(() => {});
+          await db.execute(sql`DELETE FROM cart_items WHERE product_id = ${cleanId};`).catch(() => {});
+          await db.execute(sql`DELETE FROM wishlists WHERE product_id = ${cleanId};`).catch(() => {});
+          await db.execute(sql`DELETE FROM reviews WHERE product_id = ${cleanId};`).catch(() => {});
+          await db.execute(sql`DELETE FROM product_variants WHERE product_id = ${cleanId};`).catch(() => {});
+          await db.execute(sql`DELETE FROM product_images WHERE product_id = ${cleanId};`).catch(() => {});
           await db.execute(sql`DELETE FROM products WHERE id = ${cleanId} OR slug = ${cleanId};`);
           deleted = true;
         } catch (rawErr) {
