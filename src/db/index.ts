@@ -1781,11 +1781,24 @@ export const repository = {
         const rows = userId
           ? await db.select().from(schema.orders).where(eq(schema.orders.userId, userId))
           : await db.select().from(schema.orders);
-        const orderIds = rows.map((r) => r.id);
         const items = await db.select().from(schema.orderItems);
 
-        if (rows.length > 0) {
-          const mapped = rows.map((o) => ({
+        const mapped = rows.map((o) => {
+          const rawNotes = o.notes || '';
+          let deliveryDate = 'Flexible / Next Available';
+          let deliveryTimeSlot = 'Flexible (9:00 AM – 7:00 PM)';
+          let cleanNotes = rawNotes;
+
+          const scheduleMatch = rawNotes.match(/^\[Delivery Scheduled:\s*([^\](]+?)(?:\s*\(([^)]+)\))?\]\s*(.*)$/s);
+          if (scheduleMatch) {
+            deliveryDate = scheduleMatch[1].trim() || deliveryDate;
+            if (scheduleMatch[2]) {
+              deliveryTimeSlot = scheduleMatch[2].trim();
+            }
+            cleanNotes = scheduleMatch[3].trim();
+          }
+
+          return {
             id: o.id,
             orderNumber: o.orderNumber,
             userId: o.userId || null,
@@ -1801,9 +1814,11 @@ export const repository = {
             shipping: o.shipping,
             total: o.total,
             status: o.status as any,
+            deliveryDate,
+            deliveryTimeSlot,
             paymentMethod: o.paymentMethod,
             paymentReceiptUrl: o.paymentReceiptUrl,
-            notes: o.notes || '',
+            notes: cleanNotes,
             createdAt: o.createdAt.toISOString(),
             updatedAt: o.updatedAt.toISOString(),
             items: items.filter((i) => i.orderId === o.id).map((i) => ({
@@ -1819,9 +1834,13 @@ export const repository = {
               total: i.total,
               imageUrl: i.imageUrl || undefined,
             })),
-          }));
-          return mapped.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+          };
+        });
+        const sorted = mapped.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+        if (!userId) {
+          memoryStore.orders = sorted;
         }
+        return sorted;
       } catch (err) {
         console.warn('Neon getOrders note:', err);
       }
@@ -1956,42 +1975,35 @@ export const repository = {
   },
 
   async updateOrderStatus(orderId: string, status: string) {
-    const order = memoryStore.orders.find((o) => o.id === orderId || o.orderNumber === orderId);
-    if (!order) return null;
-
-    const validTransitions: Record<string, string[]> = {
-      pending: ['processing', 'cancelled'],
-      processing: ['shipped', 'cancelled'],
-      shipped: ['delivered', 'cancelled'],
-      delivered: [],
-      cancelled: [],
-    };
-
-    const allowed = validTransitions[order.status] || [];
-    if (!allowed.includes(status)) {
-      throw new Error(`Invalid status transition from '${order.status}' to '${status}'. Allowed: ${allowed.join(', ') || 'none'}`);
+    const validStatuses = ['pending', 'processing', 'shipped', 'delivered', 'cancelled'];
+    const normalizedStatus = String(status).trim().toLowerCase();
+    if (!validStatuses.includes(normalizedStatus)) {
+      throw new Error(`Invalid status '${status}'. Must be one of: ${validStatuses.join(', ')}`);
     }
 
     const db = getDb();
     if (db) {
       try {
         await db.update(schema.orders)
-          .set({ status, updatedAt: new Date() })
+          .set({ status: normalizedStatus, updatedAt: new Date() })
           .where(or(eq(schema.orders.id, orderId), eq(schema.orders.orderNumber, orderId)));
       } catch (err) {
         console.error('Neon update order status error:', err);
+        throw err;
       }
     }
 
-    order.status = status;
-    order.updatedAt = new Date().toISOString();
-    return order;
+    const order = memoryStore.orders.find((o) => o.id === orderId || o.orderNumber === orderId);
+    if (order) {
+      order.status = normalizedStatus;
+      order.updatedAt = new Date().toISOString();
+      return order;
+    }
+
+    return this.getOrderById(orderId);
   },
 
   async attachReceipt(orderId: string, fileUrl: string) {
-    const order = memoryStore.orders.find((o) => o.id === orderId || o.orderNumber === orderId);
-    if (!order) return null;
-
     const db = getDb();
     if (db) {
       try {
@@ -2003,9 +2015,14 @@ export const repository = {
       }
     }
 
-    order.paymentReceiptUrl = fileUrl;
-    order.updatedAt = new Date().toISOString();
-    return order;
+    const order = memoryStore.orders.find((o) => o.id === orderId || o.orderNumber === orderId);
+    if (order) {
+      order.paymentReceiptUrl = fileUrl;
+      order.updatedAt = new Date().toISOString();
+      return order;
+    }
+
+    return this.getOrderById(orderId);
   },
 
   // ── Settings ─────────────────────────────
@@ -2704,39 +2721,117 @@ export const repository = {
 
   // ── Analytics ────────────────────────────
   async getAnalytics() {
-    await this.getOrders();
-    const totalRevenue = memoryStore.orders
-      .filter((o) => o.status !== 'cancelled')
-      .reduce((sum, o) => sum + o.total, 0);
+    const [allOrders, allUsers, allCategories, productsRes, drafts] = await Promise.all([
+      this.getOrders(),
+      this.getAllUsers(),
+      this.getCategories(),
+      this.getProducts({ pageSize: 10000 }),
+      this.getTelegramDrafts(),
+    ]);
 
-    const totalOrders = memoryStore.orders.length;
-    const pendingOrders = memoryStore.orders.filter((o) => o.status === 'pending').length;
-    const activeOrders = memoryStore.orders.filter((o) => o.status !== 'delivered' && o.status !== 'cancelled').length;
-    const totalCustomers = memoryStore.users.filter((u) => u.role === 'customer').length;
-    const totalProducts = memoryStore.products.length;
-    const pendingDrafts = memoryStore.telegramDrafts.filter((d) => d.status === 'draft').length;
+    const nonCancelledOrders = allOrders.filter((o) => o.status !== 'cancelled');
+    const totalRevenue = nonCancelledOrders.reduce((sum, o) => sum + Number(o.total || 0), 0);
+    const deliveredRevenue = allOrders
+      .filter((o) => o.status === 'delivered')
+      .reduce((sum, o) => sum + Number(o.total || 0), 0);
 
-    const recentOrders = [...memoryStore.orders]
+    const totalOrders = allOrders.length;
+    const pendingOrders = allOrders.filter((o) => o.status === 'pending').length;
+    const activeOrders = allOrders.filter((o) => o.status !== 'delivered' && o.status !== 'cancelled').length;
+    const deliveredOrders = allOrders.filter((o) => o.status === 'delivered').length;
+    const cancelledOrders = allOrders.filter((o) => o.status === 'cancelled').length;
+
+    const customerUsers = allUsers.filter((u) => u.role === 'customer');
+    const uniqueOrderCustomerKeys = new Set(
+      allOrders
+        .map((o) => (o.customerPhone || o.customerEmail || o.userId || '').trim().toLowerCase())
+        .filter(Boolean)
+    );
+    const totalCustomers = Math.max(customerUsers.length, uniqueOrderCustomerKeys.size);
+
+    const liveProducts = productsRes.data || memoryStore.products;
+    const totalProducts = productsRes.total ?? liveProducts.length;
+    const pendingDrafts = drafts.length;
+
+    const recentOrders = [...allOrders]
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
       .slice(0, 6);
 
-    const categoryBreakdown = memoryStore.categories.map((c) => ({
+    const categoryBreakdown = allCategories.map((c) => ({
       name: c.name,
-      count: memoryStore.products.filter((p) => p.categoryId === c.id).length,
+      count: liveProducts.filter(
+        (p: any) => p.categoryId === c.id || p.category?.id === c.id || p.category?.slug === c.slug
+      ).length,
     }));
+
+    // Compute real Past 7 Days daily revenue & order counts
+    const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    const now = new Date();
+    const weeklyRevenue: Array<{ day: string; date: string; revenue: number; orders: number }> = [];
+    for (let i = 6; i >= 0; i--) {
+      const startOfDay = new Date(now);
+      startOfDay.setHours(0, 0, 0, 0);
+      startOfDay.setDate(startOfDay.getDate() - i);
+
+      const endOfDay = new Date(startOfDay);
+      endOfDay.setDate(endOfDay.getDate() + 1);
+
+      const dayOrders = nonCancelledOrders.filter((o) => {
+        const t = new Date(o.createdAt).getTime();
+        return t >= startOfDay.getTime() && t < endOfDay.getTime();
+      });
+
+      weeklyRevenue.push({
+        day: dayNames[startOfDay.getDay()],
+        date: startOfDay.toISOString().split('T')[0],
+        revenue: dayOrders.reduce((sum, o) => sum + Number(o.total || 0), 0),
+        orders: dayOrders.length,
+      });
+    }
+
+    // Compute real 7-day vs prior 7-day percentage change
+    const sevenDaysAgoMs = now.getTime() - 7 * 24 * 60 * 60 * 1000;
+    const fourteenDaysAgoMs = now.getTime() - 14 * 24 * 60 * 60 * 1000;
+
+    const last7Orders = nonCancelledOrders.filter((o) => new Date(o.createdAt).getTime() >= sevenDaysAgoMs);
+    const prev7Orders = nonCancelledOrders.filter((o) => {
+      const t = new Date(o.createdAt).getTime();
+      return t >= fourteenDaysAgoMs && t < sevenDaysAgoMs;
+    });
+
+    const last7Rev = last7Orders.reduce((sum, o) => sum + Number(o.total || 0), 0);
+    const prev7Rev = prev7Orders.reduce((sum, o) => sum + Number(o.total || 0), 0);
+
+    const revenueChange =
+      prev7Rev > 0
+        ? Math.round(((last7Rev - prev7Rev) / prev7Rev) * 1000) / 10
+        : last7Rev > 0
+        ? 100
+        : 0;
+
+    const ordersChange =
+      prev7Orders.length > 0
+        ? Math.round(((last7Orders.length - prev7Orders.length) / prev7Orders.length) * 1000) / 10
+        : last7Orders.length > 0
+        ? 100
+        : 0;
 
     return {
       totalRevenue,
+      deliveredRevenue,
       totalOrders,
       pendingOrders,
       activeOrders,
+      deliveredOrders,
+      cancelledOrders,
       totalCustomers,
       totalProducts,
       pendingDrafts,
       recentOrders,
       categoryBreakdown,
-      revenueChange: 14.8,
-      ordersChange: 9.2,
+      weeklyRevenue,
+      revenueChange,
+      ordersChange,
     };
   },
 

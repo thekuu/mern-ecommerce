@@ -276,5 +276,52 @@ describe('deleteOldNewArrivalProducts service', () => {
     const afterDeliveryCheck = await repository.getProductBySlug(orderedProduct.slug);
     expect(afterDeliveryCheck).toBeNull();
   });
+
+  it('allows admin to change order status between any valid states and reflects accurate dashboard analytics', async () => {
+    const order = await repository.createOrder({
+      customerName: 'Selam Tesfaye',
+      customerEmail: 'selam@example.com',
+      customerPhone: '+251922112233',
+      subcity: 'Kirkos',
+      street: 'Meskel Flower',
+      items: [
+        {
+          productId: 'prod-analytics-test',
+          productName: 'Addis Runner Shoe',
+          variantKey: 'prod-analytics-test-41',
+          size: '41',
+          quantity: 2,
+          price: 2500,
+        },
+      ],
+    });
+
+    expect(order.status).toBe('pending');
+
+    // Direct jump from pending -> delivered
+    const toDelivered = await repository.updateOrderStatus(order.id, 'delivered');
+    expect(toDelivered?.status).toBe('delivered');
+
+    // Revert from delivered -> processing
+    const toProcessing = await repository.updateOrderStatus(order.id, 'processing');
+    expect(toProcessing?.status).toBe('processing');
+
+    // Cancel order
+    const toCancelled = await repository.updateOrderStatus(order.id, 'cancelled');
+    expect(toCancelled?.status).toBe('cancelled');
+
+    // Reopen cancelled -> shipped
+    const toShipped = await repository.updateOrderStatus(order.id, 'shipped');
+    expect(toShipped?.status).toBe('shipped');
+
+    // Verify getAnalytics computes accurate totals and 7-day weeklyRevenue
+    const analytics = await repository.getAnalytics();
+    expect(analytics.totalOrders).toBeGreaterThanOrEqual(1);
+    expect(analytics.totalRevenue).toBeGreaterThan(0);
+    expect(analytics.weeklyRevenue).toHaveLength(7);
+    expect(Array.isArray(analytics.categoryBreakdown)).toBe(true);
+    expect(analytics.recentOrders.some((o) => o.id === order.id)).toBe(true);
+  });
 });
+
 

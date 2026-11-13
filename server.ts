@@ -748,8 +748,9 @@ app.post('/api/products/cleanup-old-new', requireAdmin, async (req, res) => {
 
 app.get('/api/orders', requireAuth, async (req, res) => {
   try {
-    // If admin, can retrieve all orders, otherwise only own orders
-    const userId = (req.user?.role === 'admin' || req.user?.role === 'superadmin') && req.query.all === 'true' ? undefined : req.user?.userId;
+    // If admin/moderator/superadmin, can retrieve all orders, otherwise only own orders
+    const isAdminRole = req.user?.role === 'admin' || req.user?.role === 'superadmin' || req.user?.role === 'moderator';
+    const userId = isAdminRole && req.query.all === 'true' ? undefined : req.user?.userId;
     const orders = await repository.getOrders(userId);
     res.json(orders);
   } catch (err: any) {
@@ -763,7 +764,8 @@ app.get('/api/orders/:id', requireAuth, async (req, res) => {
     if (!order) return res.status(404).json({ error: 'Order not found' });
 
     // Ensure customer only views their own order
-    if (req.user?.role !== 'admin' && req.user?.role !== 'superadmin' && order.userId && order.userId !== req.user?.userId) {
+    const isAdminRole = req.user?.role === 'admin' || req.user?.role === 'superadmin' || req.user?.role === 'moderator';
+    if (!isAdminRole && order.userId && order.userId !== req.user?.userId) {
       return res.status(403).json({ error: 'Access denied' });
     }
 
@@ -809,16 +811,20 @@ app.post('/api/orders', requireAuth, async (req, res) => {
   }
 });
 
-app.patch('/api/orders/:id/status', requireAdmin, async (req, res) => {
+const handleUpdateOrderStatus = async (req: Request, res: Response) => {
   try {
     const { status } = req.body;
     if (!status) return res.status(400).json({ error: 'Status is required' });
     const order = await repository.updateOrderStatus(req.params.id as string, status);
+    if (!order) return res.status(404).json({ error: 'Order not found' });
     res.json(order);
   } catch (err: any) {
     res.status(400).json({ error: err.message });
   }
-});
+};
+
+app.patch('/api/orders/:id/status', requireAdmin, handleUpdateOrderStatus);
+app.put('/api/orders/:id/status', requireAdmin, handleUpdateOrderStatus);
 
 app.post('/api/orders/:id/receipt', requireAuth, async (req, res) => {
   try {
@@ -828,7 +834,8 @@ app.post('/api/orders/:id/receipt', requireAuth, async (req, res) => {
     // Check ownership to prevent IDOR
     const existingOrder = await repository.getOrderById(req.params.id as string);
     if (!existingOrder) return res.status(404).json({ error: 'Order not found' });
-    if (req.user?.role !== 'admin' && req.user?.role !== 'superadmin' && existingOrder.userId && existingOrder.userId !== req.user?.userId) {
+    const isAdminRole = req.user?.role === 'admin' || req.user?.role === 'superadmin' || req.user?.role === 'moderator';
+    if (!isAdminRole && existingOrder.userId && existingOrder.userId !== req.user?.userId) {
       return res.status(403).json({ error: 'Access denied' });
     }
 

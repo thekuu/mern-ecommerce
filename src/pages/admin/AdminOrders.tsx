@@ -216,10 +216,34 @@ export default function AdminOrders() {
         <Dialog open={!!selectedOrder} onOpenChange={(open) => !open && setSelectedOrder(null)}>
           <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
             <DialogHeader>
-              <DialogTitle className="font-heading text-xl">Order {selectedOrder.orderNumber}</DialogTitle>
-              <DialogDescription>
-                Placed on {new Date(selectedOrder.createdAt).toLocaleString()} · Addis Ababa Delivery Dispatch
-              </DialogDescription>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pr-6">
+                <div>
+                  <DialogTitle className="font-heading text-xl">Order {selectedOrder.orderNumber}</DialogTitle>
+                  <DialogDescription>
+                    Placed on {new Date(selectedOrder.createdAt).toLocaleString()} · Addis Ababa Delivery Dispatch
+                  </DialogDescription>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-semibold uppercase text-muted-foreground">Status:</span>
+                  <Select
+                    value={selectedOrder.status}
+                    onValueChange={(val) => handleStatusChange(selectedOrder.id, val)}
+                  >
+                    <SelectTrigger className="w-[140px] h-8 text-xs">
+                      <Badge variant="outline" className={`${statusColor[selectedOrder.status]} text-[11px] font-semibold uppercase`}>
+                        <SelectValue />
+                      </Badge>
+                    </SelectTrigger>
+                    <SelectContent>
+                      {statuses.map((s) => (
+                        <SelectItem key={s.value} value={s.value}>
+                          {s.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
             </DialogHeader>
 
             <div className="space-y-5 text-sm">

@@ -26,16 +26,6 @@ import {
   Bar,
 } from 'recharts';
 
-const revenueData = [
-  { day: 'Mon', revenue: 14200, orders: 4 },
-  { day: 'Tue', revenue: 18500, orders: 5 },
-  { day: 'Wed', revenue: 12000, orders: 3 },
-  { day: 'Thu', revenue: 24800, orders: 7 },
-  { day: 'Fri', revenue: 31200, orders: 9 },
-  { day: 'Sat', revenue: 42000, orders: 12 },
-  { day: 'Sun', revenue: 38500, orders: 10 },
-];
-
 export default function AdminDashboard() {
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [loading, setLoading] = useState(true);
@@ -58,41 +48,66 @@ export default function AdminDashboard() {
 
   const defaultStats: DashboardStats = {
     totalRevenue: 0,
+    deliveredRevenue: 0,
     totalOrders: 0,
+    pendingOrders: 0,
+    activeOrders: 0,
+    deliveredOrders: 0,
+    cancelledOrders: 0,
     totalCustomers: 0,
     totalProducts: 0,
     pendingDrafts: 0,
     revenueChange: 0,
     ordersChange: 0,
     categoryBreakdown: [],
+    weeklyRevenue: [],
     recentOrders: [],
   };
 
   const activeStats = stats || defaultStats;
 
+  const chartRevenueData =
+    activeStats.weeklyRevenue && activeStats.weeklyRevenue.length > 0
+      ? activeStats.weeklyRevenue
+      : ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day) => ({
+          day,
+          revenue: 0,
+          orders: 0,
+        }));
+
   const cards = [
     {
       label: 'Total Revenue',
       value: formatETB(activeStats.totalRevenue),
-      change: `+${activeStats.revenueChange}%`,
+      change:
+        activeStats.revenueChange !== 0
+          ? `${activeStats.revenueChange > 0 ? '+' : ''}${activeStats.revenueChange}% vs prev 7d`
+          : '',
+      subtitle: `${formatETB(activeStats.deliveredRevenue ?? 0)} delivered · ${activeStats.activeOrders ?? 0} in progress`,
       icon: DollarSign,
     },
     {
       label: 'Total Orders',
       value: activeStats.totalOrders.toLocaleString(),
-      change: `+${activeStats.ordersChange}%`,
+      change:
+        activeStats.ordersChange !== 0
+          ? `${activeStats.ordersChange > 0 ? '+' : ''}${activeStats.ordersChange}% vs prev 7d`
+          : '',
+      subtitle: `${activeStats.pendingOrders ?? 0} pending · ${activeStats.deliveredOrders ?? 0} delivered`,
       icon: ShoppingCart,
     },
     {
       label: 'Active Customers',
       value: activeStats.totalCustomers.toLocaleString(),
-      change: '+6.5%',
+      change: '',
+      subtitle: 'Registered customer accounts',
       icon: Users,
     },
     {
       label: 'Live Catalog Items',
       value: activeStats.totalProducts.toLocaleString(),
       change: '',
+      subtitle: `${activeStats.categoryBreakdown?.length || 0} active categories`,
       icon: Package,
     },
   ];
@@ -111,8 +126,8 @@ export default function AdminDashboard() {
               <Send className="h-3.5 w-3.5 mr-1.5" /> Telegram Pipeline
             </Button>
           </Link>
-          <Button variant="outline" size="sm" onClick={fetchStats}>
-            <RefreshCw className="h-3.5 w-3.5 mr-1.5" /> Refresh
+          <Button variant="outline" size="sm" onClick={fetchStats} disabled={loading}>
+            <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${loading ? 'animate-spin' : ''}`} /> Refresh
           </Button>
         </div>
       </div>
@@ -127,9 +142,12 @@ export default function AdminDashboard() {
                   <card.icon className="h-4 w-4 text-muted-foreground" />
                 </div>
                 <p className="font-heading text-2xl font-bold text-foreground">{card.value}</p>
+                {card.subtitle && (
+                  <p className="text-xs text-muted-foreground mt-1">{card.subtitle}</p>
+                )}
                 {card.change && (
                   <p className="text-xs text-emerald-600 dark:text-emerald-400 flex items-center gap-1 mt-1 font-medium">
-                    <TrendingUp className="h-3 w-3" /> {card.change} vs previous cycle
+                    <TrendingUp className="h-3 w-3" /> {card.change}
                   </p>
                 )}
               </div>
@@ -206,7 +224,7 @@ export default function AdminDashboard() {
           </div>
           <div className="h-60 w-full">
             <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={revenueData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+              <AreaChart data={chartRevenueData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
                 <defs>
                   <linearGradient id="colorRev" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="5%" stopColor="hsl(var(--primary))" stopOpacity={0.4} />
@@ -214,7 +232,7 @@ export default function AdminDashboard() {
                   </linearGradient>
                 </defs>
                 <XAxis dataKey="day" stroke="hsl(var(--muted-foreground))" fontSize={11} tickLine={false} />
-                <YAxis stroke="hsl(var(--muted-foreground))" fontSize={11} tickLine={false} tickFormatter={(v) => `${v / 1000}k`} />
+                <YAxis stroke="hsl(var(--muted-foreground))" fontSize={11} tickLine={false} tickFormatter={(v) => (v >= 1000 ? `${(v / 1000).toFixed(0)}k` : `${v}`)} />
                 <Tooltip
                   formatter={(val: any) => [`${Number(val).toLocaleString()} ETB`, 'Revenue']}
                   contentStyle={{ backgroundColor: 'hsl(var(--card))', borderColor: 'hsl(var(--border))', borderRadius: '6px' }}
@@ -233,14 +251,11 @@ export default function AdminDashboard() {
           <div className="h-60 w-full">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart
-                data={stats?.categoryBreakdown || [
-                  { name: 'Clothes', count: 4 },
-                  { name: 'Shoes', count: 4 },
-                ]}
+                data={activeStats.categoryBreakdown}
                 margin={{ top: 10, right: 10, left: 0, bottom: 0 }}
               >
                 <XAxis dataKey="name" stroke="hsl(var(--muted-foreground))" fontSize={11} tickLine={false} />
-                <YAxis stroke="hsl(var(--muted-foreground))" fontSize={11} tickLine={false} />
+                <YAxis stroke="hsl(var(--muted-foreground))" fontSize={11} tickLine={false} allowDecimals={false} />
                 <Tooltip
                   formatter={(val: any) => [`${val} items`, 'Products']}
                   contentStyle={{ backgroundColor: 'hsl(var(--card))', borderColor: 'hsl(var(--border))', borderRadius: '6px' }}
@@ -265,33 +280,37 @@ export default function AdminDashboard() {
         </div>
 
         <div className="divide-y divide-border text-sm">
-          {activeStats.recentOrders?.map((order) => (
-            <Link
-              key={order.id}
-              to={`/admin/orders?orderId=${order.id}`}
-              className="py-3 flex items-center justify-between gap-4 hover:bg-muted/30 px-2 -mx-2 rounded transition-colors"
-            >
-              <div>
-                <div className="flex items-center gap-2">
-                  <p className="font-mono text-xs font-semibold">{order.orderNumber}</p>
-                  {order.status === 'pending' && (
-                    <span className="inline-flex items-center rounded bg-amber-500 px-1.5 py-0.5 text-[9px] font-bold uppercase text-white">
-                      NEW
-                    </span>
-                  )}
+          {activeStats.recentOrders && activeStats.recentOrders.length > 0 ? (
+            activeStats.recentOrders.map((order) => (
+              <Link
+                key={order.id}
+                to={`/admin/orders?orderId=${order.id}`}
+                className="py-3 flex items-center justify-between gap-4 hover:bg-muted/30 px-2 -mx-2 rounded transition-colors"
+              >
+                <div>
+                  <div className="flex items-center gap-2">
+                    <p className="font-mono text-xs font-semibold">{order.orderNumber}</p>
+                    {order.status === 'pending' && (
+                      <span className="inline-flex items-center rounded bg-amber-500 px-1.5 py-0.5 text-[9px] font-bold uppercase text-white">
+                        NEW
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    {order.customerName} · {order.subcity} · {new Date(order.createdAt).toLocaleDateString()}
+                  </p>
                 </div>
-                <p className="text-xs text-muted-foreground">
-                  {order.customerName} · {order.subcity} · {new Date(order.createdAt).toLocaleDateString()}
-                </p>
-              </div>
-              <div className="flex items-center gap-3">
-                <span className="font-heading font-semibold text-xs">{formatETB(order.total)}</span>
-                <Badge variant="outline" className="text-[10px] font-semibold uppercase">
-                  {order.status}
-                </Badge>
-              </div>
-            </Link>
-          ))}
+                <div className="flex items-center gap-3">
+                  <span className="font-heading font-semibold text-xs">{formatETB(order.total)}</span>
+                  <Badge variant="outline" className="text-[10px] font-semibold uppercase">
+                    {order.status}
+                  </Badge>
+                </div>
+              </Link>
+            ))
+          ) : (
+            <p className="py-6 text-center text-xs text-muted-foreground">No orders placed yet.</p>
+          )}
         </div>
       </div>
     </div>

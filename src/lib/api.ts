@@ -426,9 +426,12 @@ export async function getProductReviews(productId: string): Promise<Review[]> {
 
 export interface DashboardStats {
   totalRevenue: number;
+  deliveredRevenue?: number;
   totalOrders: number;
   pendingOrders?: number;
   activeOrders?: number;
+  deliveredOrders?: number;
+  cancelledOrders?: number;
   totalCustomers: number;
   totalProducts: number;
   pendingDrafts: number;
@@ -436,6 +439,7 @@ export interface DashboardStats {
   ordersChange: number;
   recentOrders?: Order[];
   categoryBreakdown?: Array<{ name: string; count: number }>;
+  weeklyRevenue?: Array<{ day: string; date: string; revenue: number; orders: number }>;
 }
 
 export async function getDashboardStats(): Promise<DashboardStats> {
