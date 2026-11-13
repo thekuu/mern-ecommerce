@@ -21,12 +21,16 @@ interface SettingsState {
 }
 
 export const useSettingsStore = create<SettingsState>((set) => {
+  const normalizeStoreName = (name?: string) =>
+    !name || name.trim().toLowerCase() === 'homicart' ? 'ShegAddis' : name;
+
   let savedLocal: Partial<AppSettings> = {};
   try {
     localStorage.removeItem('homicart_store_settings');
     const raw = localStorage.getItem('shegaddis_store_settings');
     if (raw) {
       savedLocal = JSON.parse(raw);
+      savedLocal.storeName = normalizeStoreName(savedLocal.storeName);
       localStorage.setItem('shegaddis_store_settings', JSON.stringify(savedLocal));
     }
   } catch {
@@ -37,7 +41,7 @@ export const useSettingsStore = create<SettingsState>((set) => {
 
   return {
     deliveryFee: typeof initial.deliveryFee === 'number' ? initial.deliveryFee : 150,
-    storeName: initial.storeName || 'ShegAddis',
+    storeName: normalizeStoreName(initial.storeName),
     contactPhone: initial.contactPhone || '+251 911 234 567',
     contactEmail: initial.contactEmail || 'contact@shegaddis.com',
     telegramHandle: initial.telegramHandle || '@ShegAddis',
@@ -62,7 +66,10 @@ export const useSettingsStore = create<SettingsState>((set) => {
     },
 
     setSettings: (settings) => {
-      const sanitized = settings;
+      const sanitized = {
+        ...settings,
+        ...(settings.storeName !== undefined ? { storeName: normalizeStoreName(settings.storeName) } : {}),
+      };
       try {
         const raw = localStorage.getItem('shegaddis_store_settings');
         const curr = raw ? JSON.parse(raw) : {};
@@ -89,7 +96,10 @@ export const useSettingsStore = create<SettingsState>((set) => {
         set({ isLoading: true });
         const data = await getSettings();
         if (data) {
-          const sanitized = data;
+          const sanitized = {
+            ...data,
+            storeName: normalizeStoreName(data.storeName),
+          };
           try {
             localStorage.setItem('shegaddis_store_settings', JSON.stringify(sanitized));
           } catch (err) {
@@ -97,7 +107,7 @@ export const useSettingsStore = create<SettingsState>((set) => {
           }
           set({
             deliveryFee: typeof sanitized.deliveryFee === 'number' ? sanitized.deliveryFee : 150,
-            storeName: sanitized.storeName || 'ShegAddis',
+            storeName: sanitized.storeName,
             contactPhone: sanitized.contactPhone || '+251 911 234 567',
             contactEmail: sanitized.contactEmail || 'contact@shegaddis.com',
             telegramHandle: sanitized.telegramHandle || '@ShegAddis',

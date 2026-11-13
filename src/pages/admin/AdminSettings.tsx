@@ -79,7 +79,9 @@ export default function AdminSettings() {
           setBannerForm(s.banner);
           updateBanner(s.banner);
         }
-        if (s.storeName) setStoreName(s.storeName);
+        if (s.storeName) {
+          setStoreName(s.storeName.toLowerCase() === 'homicart' ? 'ShegAddis' : s.storeName);
+        }
         if (s.contactPhone) setContactPhone(s.contactPhone);
         if (s.contactEmail) setContactEmail(s.contactEmail);
         if (s.telegramHandle) setTelegramHandle(s.telegramHandle);
@@ -560,6 +562,17 @@ export default function AdminSettings() {
         </div>
 
         <div className="grid sm:grid-cols-2 gap-4">
+          <div className="sm:col-span-2">
+            <Label className="text-xs uppercase tracking-wider text-muted-foreground flex items-center gap-1">
+              <Store className="h-3 w-3" /> Store Name
+            </Label>
+            <Input
+              value={storeName}
+              onChange={(e) => setStoreName(e.target.value)}
+              placeholder="ShegAddis"
+              className="mt-1.5"
+            />
+          </div>
           <div>
             <Label className="text-xs uppercase tracking-wider text-muted-foreground flex items-center gap-1">
               <Phone className="h-3 w-3" /> Phone Number

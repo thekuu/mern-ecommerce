@@ -53,7 +53,11 @@ function savePersistedTelegramSources(sources: Array<TelegramSourceRecord>) {
 function loadPersistedSettings(defaultSettings: typeof initialSettings): typeof initialSettings {
   try {
     if (fs.existsSync(SETTINGS_FILE)) {
-      return { ...defaultSettings, ...JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf-8')) };
+      const loaded = { ...defaultSettings, ...JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf-8')) };
+      if (!loaded.storeName || loaded.storeName.toLowerCase() === 'homicart') {
+        loaded.storeName = 'ShegAddis';
+      }
+      return loaded;
     }
   } catch (e) {
     console.warn('Failed to load persisted settings:', e);
@@ -1937,11 +1941,21 @@ export const repository = {
       try {
         const rows = await db.select().from(schema.settings).where(eq(schema.settings.key, 'general'));
         if (rows.length > 0 && rows[0].value) {
-          memoryStore.settings = { ...memoryStore.settings, ...(rows[0].value as Record<string, any>) };
+          const dbSettings = rows[0].value as Record<string, any>;
+          if (dbSettings.storeName && String(dbSettings.storeName).toLowerCase() === 'homicart') {
+            dbSettings.storeName = 'ShegAddis';
+            await db.update(schema.settings)
+              .set({ value: dbSettings, updatedAt: new Date() })
+              .where(eq(schema.settings.key, 'general'));
+          }
+          memoryStore.settings = { ...memoryStore.settings, ...dbSettings };
         }
       } catch (err) {
         console.warn('Neon getSettings note:', err);
       }
+    }
+    if (!memoryStore.settings.storeName || String(memoryStore.settings.storeName).toLowerCase() === 'homicart') {
+      memoryStore.settings.storeName = 'ShegAddis';
     }
     return memoryStore.settings;
   },

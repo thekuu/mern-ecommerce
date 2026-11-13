@@ -84,7 +84,7 @@ export function StoreFooter() {
           </div>
         </div>
         <div className="mt-10 pt-6 border-t border-border text-center text-xs text-muted-foreground">
-          © {new Date().getFullYear()} {storeName || 'ShegAddis'}. All rights reserved.
+          © {new Date().getFullYear()} {!storeName || storeName.toLowerCase() === 'homicart' ? 'ShegAddis' : storeName}. All rights reserved.
         </div>
       </div>
     </footer>
