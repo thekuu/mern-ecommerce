@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { getOrders, updateOrderStatus } from '@/lib/api';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -31,6 +32,7 @@ export default function AdminOrders() {
   const [loading, setLoading] = useState(true);
   const [filterStatus, setFilterStatus] = useState<string>('all');
   const [selectedOrder, setSelectedOrder] = useState<any | null>(null);
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const fetchOrders = async () => {
     try {
@@ -47,6 +49,18 @@ export default function AdminOrders() {
   useEffect(() => {
     fetchOrders();
   }, []);
+
+  useEffect(() => {
+    const orderIdParam = searchParams.get('orderId');
+    if (orderIdParam && orders.length > 0) {
+      const target = orders.find((o) => o.id === orderIdParam || o.orderNumber === orderIdParam);
+      if (target) {
+        setSelectedOrder(target);
+        searchParams.delete('orderId');
+        setSearchParams(searchParams, { replace: true });
+      }
+    }
+  }, [orders, searchParams, setSearchParams]);
 
   const handleStatusChange = async (orderId: string, status: string) => {
     try {
@@ -121,9 +135,16 @@ export default function AdminOrders() {
                 const scheduleSlot = order.deliveryTimeSlot || 'Standard Delivery Window';
 
                 return (
-                  <tr key={order.id} className="hover:bg-muted/10 transition-colors">
+                  <tr key={order.id} className={`hover:bg-muted/10 transition-colors ${order.status === 'pending' ? 'bg-amber-500/5' : ''}`}>
                     <td className="p-3.5 font-mono text-xs font-semibold">
-                      {order.orderNumber}
+                      <div className="flex items-center gap-1.5">
+                        <span>{order.orderNumber}</span>
+                        {order.status === 'pending' && (
+                          <span className="inline-flex items-center rounded bg-amber-500 px-1.5 py-0.5 text-[9px] font-bold uppercase text-white">
+                            NEW
+                          </span>
+                        )}
+                      </div>
                       <span className="block text-[10px] font-normal text-muted-foreground mt-0.5">
                         {new Date(order.createdAt).toLocaleDateString()}
                       </span>

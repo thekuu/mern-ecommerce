@@ -1,9 +1,10 @@
 import { Link, useLocation } from 'react-router-dom';
-import { ShoppingCart, Heart, Search, Menu, X, User as UserIcon } from 'lucide-react';
-import { useState } from 'react';
+import { ShoppingCart, Heart, Search, Menu, X, User as UserIcon, Bell } from 'lucide-react';
+import { useState, useEffect } from 'react';
 import { useCartStore } from '@/store/cartStore';
 import { useAuthStore } from '@/store/authStore';
 import { useProductStore } from '@/store/productStore';
+import { getOrders } from '@/lib/api';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { SearchDialog } from '@/components/store/SearchDialog';
@@ -19,12 +20,38 @@ const defaultNavLinks = [
 export function StoreNavbar() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [pendingOrdersCount, setPendingOrdersCount] = useState(0);
   const location = useLocation();
   const itemCount = useCartStore(s => s.itemCount());
   const { isAuthenticated, user } = useAuthStore();
   const hasSaleItems = useProductStore(s => s.products.some(p => p.onSale || (p.compareAtPrice && p.compareAtPrice > p.price) || p.tags?.includes('sale')));
   
+  const isAdmin = Boolean(user && (user.role === 'superadmin' || user.role === 'admin' || user.role === 'moderator'));
   const navLinks = defaultNavLinks.filter(link => link.label !== 'Sale' || hasSaleItems);
+
+  useEffect(() => {
+    if (!isAdmin) {
+      setPendingOrdersCount(0);
+      return;
+    }
+    let mounted = true;
+    const checkPendingOrders = async () => {
+      try {
+        const orders = await getOrders(true);
+        if (mounted && Array.isArray(orders)) {
+          setPendingOrdersCount(orders.filter(o => o.status === 'pending').length);
+        }
+      } catch {
+        // ignore
+      }
+    };
+    checkPendingOrders();
+    const timer = setInterval(checkPendingOrders, 20000);
+    return () => {
+      mounted = false;
+      clearInterval(timer);
+    };
+  }, [isAdmin, location.pathname]);
 
   return (
     <>
@@ -52,6 +79,19 @@ export function StoreNavbar() {
 
           {/* Actions */}
           <div className="flex items-center gap-2">
+            {isAdmin && (
+              <Link to="/admin/orders" title="Admin Orders & Notifications">
+                <Button variant="outline" size="sm" className="relative h-8 px-2.5 gap-1.5 text-xs">
+                  <Bell className={`h-3.5 w-3.5 ${pendingOrdersCount > 0 ? 'text-amber-500' : 'text-muted-foreground'}`} />
+                  <span className="hidden sm:inline">Admin</span>
+                  {pendingOrdersCount > 0 && (
+                    <span className="inline-flex items-center justify-center rounded-full bg-amber-500 px-1.5 min-w-[18px] h-4 text-[10px] font-bold text-white">
+                      {pendingOrdersCount}
+                    </span>
+                  )}
+                </Button>
+              </Link>
+            )}
             <Button variant="ghost" size="icon" onClick={() => setSearchOpen(true)} aria-label="Search">
               <Search className="h-5 w-5" />
             </Button>
@@ -100,6 +140,20 @@ export function StoreNavbar() {
                   {link.label}
                 </Link>
               ))}
+              {isAdmin && (
+                <Link
+                  to="/admin/orders"
+                  onClick={() => setMobileOpen(false)}
+                  className="text-sm font-medium py-2 hover:text-primary transition-colors flex items-center justify-between"
+                >
+                  <span>Admin Orders</span>
+                  {pendingOrdersCount > 0 && (
+                    <span className="inline-flex items-center justify-center rounded-full bg-amber-500 px-2 py-0.5 text-[10px] font-bold text-white">
+                      {pendingOrdersCount} New
+                    </span>
+                  )}
+                </Link>
+              )}
               <Link
                 to={isAuthenticated ? '/profile' : '/login'}
                 onClick={() => setMobileOpen(false)}

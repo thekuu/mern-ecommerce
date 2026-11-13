@@ -427,6 +427,8 @@ export async function getProductReviews(productId: string): Promise<Review[]> {
 export interface DashboardStats {
   totalRevenue: number;
   totalOrders: number;
+  pendingOrders?: number;
+  activeOrders?: number;
   totalCustomers: number;
   totalProducts: number;
   pendingDrafts: number;

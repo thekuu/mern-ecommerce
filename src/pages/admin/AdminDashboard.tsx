@@ -139,6 +139,40 @@ export default function AdminDashboard() {
             ))}
       </div>
 
+      {/* New Orders Notification Banner */}
+      {stats && (stats.pendingOrders ?? stats.recentOrders?.filter((o) => o.status === 'pending').length ?? 0) > 0 && (() => {
+        const pendingCount = stats.pendingOrders ?? stats.recentOrders?.filter((o) => o.status === 'pending').length ?? 0;
+        const latestPending = stats.recentOrders?.find((o) => o.status === 'pending');
+        return (
+          <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div className="relative h-9 w-9 rounded-full bg-amber-500/20 flex items-center justify-center text-amber-600 dark:text-amber-400 shrink-0">
+                <ShoppingCart className="h-4 w-4" />
+                <span className="absolute -top-0.5 -right-0.5 flex h-2.5 w-2.5">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75" />
+                  <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-amber-500" />
+                </span>
+              </div>
+              <div>
+                <p className="font-heading font-semibold text-sm text-foreground">
+                  {pendingCount} New Order{pendingCount > 1 ? 's' : ''} Awaiting Fulfillment
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {latestPending
+                    ? `Latest: ${latestPending.orderNumber} from ${latestPending.customerName || 'Customer'} (${formatETB(latestPending.total)})`
+                    : 'Customer orders are waiting for confirmation and dispatch.'}
+                </p>
+              </div>
+            </div>
+            <Link to="/admin/orders">
+              <Button size="sm" className="bg-amber-500 hover:bg-amber-600 text-white font-heading text-xs uppercase tracking-wider shrink-0">
+                View & Dispatch Orders <ArrowRight className="ml-1.5 h-3.5 w-3.5" />
+              </Button>
+            </Link>
+          </div>
+        );
+      })()}
+
       {/* Ingestion Notification Banner */}
       {stats && stats.pendingDrafts > 0 && (
         <div className="bg-muted/40 border border-foreground/15 rounded-lg p-4 flex items-center justify-between gap-4">
@@ -232,9 +266,20 @@ export default function AdminDashboard() {
 
         <div className="divide-y divide-border text-sm">
           {activeStats.recentOrders?.map((order) => (
-            <div key={order.id} className="py-3 flex items-center justify-between gap-4">
+            <Link
+              key={order.id}
+              to={`/admin/orders?orderId=${order.id}`}
+              className="py-3 flex items-center justify-between gap-4 hover:bg-muted/30 px-2 -mx-2 rounded transition-colors"
+            >
               <div>
-                <p className="font-mono text-xs font-semibold">{order.orderNumber}</p>
+                <div className="flex items-center gap-2">
+                  <p className="font-mono text-xs font-semibold">{order.orderNumber}</p>
+                  {order.status === 'pending' && (
+                    <span className="inline-flex items-center rounded bg-amber-500 px-1.5 py-0.5 text-[9px] font-bold uppercase text-white">
+                      NEW
+                    </span>
+                  )}
+                </div>
                 <p className="text-xs text-muted-foreground">
                   {order.customerName} · {order.subcity} · {new Date(order.createdAt).toLocaleDateString()}
                 </p>
@@ -245,7 +290,7 @@ export default function AdminDashboard() {
                   {order.status}
                 </Badge>
               </div>
-            </div>
+            </Link>
           ))}
         </div>
       </div>

@@ -212,6 +212,52 @@ const memoryStore: InMemoryStore = {
   visitorLogs: [],
 };
 
+/**
+ * Returns the set of product IDs that are currently part of any active order
+ * (where status is neither 'delivered' nor 'cancelled').
+ */
+async function getActiveOrderedProductIds(dbInstance?: ReturnType<typeof getDb>): Promise<Set<string>> {
+  const activeProductIds = new Set<string>();
+
+  for (const order of memoryStore.orders) {
+    if (order && order.status !== 'delivered' && order.status !== 'cancelled') {
+      const items = Array.isArray(order.items) ? order.items : [];
+      for (const item of items) {
+        const pid = item?.productId || item?.product?.id;
+        if (pid) activeProductIds.add(String(pid));
+      }
+    }
+  }
+
+  const db = dbInstance !== undefined ? dbInstance : getDb();
+  if (db) {
+    try {
+      const activeOrders = await db
+        .select({ id: schema.orders.id, status: schema.orders.status })
+        .from(schema.orders);
+      const activeOrderIds = new Set(
+        activeOrders
+          .filter((o) => o.status !== 'delivered' && o.status !== 'cancelled')
+          .map((o) => o.id)
+      );
+      if (activeOrderIds.size > 0) {
+        const allOrderItems = await db
+          .select({ orderId: schema.orderItems.orderId, productId: schema.orderItems.productId })
+          .from(schema.orderItems);
+        for (const oi of allOrderItems) {
+          if (oi.productId && activeOrderIds.has(oi.orderId)) {
+            activeProductIds.add(String(oi.productId));
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('getActiveOrderedProductIds query note:', err);
+    }
+  }
+
+  return activeProductIds;
+}
+
 // ─────────────────────────────────────────────────────────────
 // Neon Postgres Database Sync & Auto-Seed
 // ─────────────────────────────────────────────────────────────
@@ -271,11 +317,17 @@ export async function initNeonDatabase() {
     const allDbProds = await db.select().from(schema.products);
     const allDbImgs = await db.select().from(schema.productImages);
     const allDbVars = await db.select().from(schema.productVariants);
+    const activeOrderProductIds = await getActiveOrderedProductIds(db);
 
     const nowTenDaysAgoMs = Date.now() - 10 * 24 * 60 * 60 * 1000;
 
     memoryStore.products = allDbProds
       .filter((p) => {
+        // Never hide or remove products that are under an active order (not delivered or cancelled)
+        if (activeOrderProductIds.has(p.id)) {
+          return true;
+        }
+
         // Exclude products marked only as new that are older than 10 days, or abandoned 0-image products
         const createdTime = p.createdAt ? new Date(p.createdAt).getTime() : NaN;
         const isOlderThan10Days = !isNaN(createdTime) && createdTime < nowTenDaysAgoMs;
@@ -732,11 +784,17 @@ export const repository = {
         if (allDbProds.length > 0) {
           const allDbImgs = await db.select().from(schema.productImages);
           const allDbVars = await db.select().from(schema.productVariants);
+          const activeOrderProductIds = await getActiveOrderedProductIds(db);
 
           const nowTenDaysAgoMs = Date.now() - 10 * 24 * 60 * 60 * 1000;
 
           memoryStore.products = allDbProds
             .filter((p) => {
+              // Never hide or remove products that are under an active order (not delivered or cancelled)
+              if (activeOrderProductIds.has(p.id)) {
+                return true;
+              }
+
               // Exclude products marked only as new that are older than 10 days, or abandoned 0-image products
               const createdTime = p.createdAt ? new Date(p.createdAt).getTime() : NaN;
               const isOlderThan10Days = !isNaN(createdTime) && createdTime < nowTenDaysAgoMs;
@@ -1128,10 +1186,13 @@ export const repository = {
     const deletedIds = new Set<string>();
 
     const db = getDb();
+    const activeOrderProductIds = await getActiveOrderedProductIds(db);
+
     if (db) {
       try {
         // Query Postgres for products marked as ONLY new (isNew = true AND isFeatured = false/null)
-        // and created more than daysOld days ago, OR any product >10 days old that has zero images in product_images
+        // and created more than daysOld days ago, OR any product >10 days old that has zero images in product_images,
+        // EXCLUDING any product that is currently in an active order (status not in 'delivered', 'cancelled')
         const toDeleteRows = await db
           .select({
             id: schema.products.id,
@@ -1146,20 +1207,31 @@ export const repository = {
           })
           .from(schema.products)
           .where(
-            or(
-              and(
-                eq(schema.products.isNew, true),
-                or(eq(schema.products.isFeatured, false), sql`${schema.products.isFeatured} IS NULL`),
-                lt(schema.products.createdAt, cutoffDate)
-              ),
-              and(
-                lt(schema.products.createdAt, cutoffDate),
-                sql`NOT EXISTS (SELECT 1 FROM product_images WHERE product_images.product_id = products.id)`
+            and(
+              sql`NOT EXISTS (
+                SELECT 1 FROM order_items
+                INNER JOIN orders ON orders.id = order_items.order_id
+                WHERE order_items.product_id = products.id
+                  AND orders.status NOT IN ('delivered', 'cancelled')
+              )`,
+              or(
+                and(
+                  eq(schema.products.isNew, true),
+                  or(eq(schema.products.isFeatured, false), sql`${schema.products.isFeatured} IS NULL`),
+                  lt(schema.products.createdAt, cutoffDate)
+                ),
+                and(
+                  lt(schema.products.createdAt, cutoffDate),
+                  sql`NOT EXISTS (SELECT 1 FROM product_images WHERE product_images.product_id = products.id)`
+                )
               )
             )
           );
 
         for (const row of toDeleteRows) {
+          // Never delete if currently under an active order (not delivered or cancelled)
+          if (activeOrderProductIds.has(row.id)) continue;
+
           // Strictly verify marked ONLY as new:
           // 1. Must not be featured
           if (row.isFeatured && Boolean(row.isFeatured)) continue;
@@ -1190,6 +1262,8 @@ export const repository = {
     // Also check memoryStore to keep in-memory data / local fallback clean
     const toDeleteFromMemory = memoryStore.products.filter((p) => {
       if (deletedIds.has(p.id)) return false;
+      // Never delete if currently under an active order (not delivered or cancelled)
+      if (activeOrderProductIds.has(p.id)) return false;
       if (p.isFeatured) return false;
       const isOnlyNew = Boolean(p.isNew);
       if (!isOnlyNew) return false;
@@ -2636,6 +2710,8 @@ export const repository = {
       .reduce((sum, o) => sum + o.total, 0);
 
     const totalOrders = memoryStore.orders.length;
+    const pendingOrders = memoryStore.orders.filter((o) => o.status === 'pending').length;
+    const activeOrders = memoryStore.orders.filter((o) => o.status !== 'delivered' && o.status !== 'cancelled').length;
     const totalCustomers = memoryStore.users.filter((u) => u.role === 'customer').length;
     const totalProducts = memoryStore.products.length;
     const pendingDrafts = memoryStore.telegramDrafts.filter((d) => d.status === 'draft').length;
@@ -2652,6 +2728,8 @@ export const repository = {
     return {
       totalRevenue,
       totalOrders,
+      pendingOrders,
+      activeOrders,
       totalCustomers,
       totalProducts,
       pendingDrafts,

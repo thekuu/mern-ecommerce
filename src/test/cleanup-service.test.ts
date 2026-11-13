@@ -218,5 +218,63 @@ describe('deleteOldNewArrivalProducts service', () => {
     const exists = catalog.data.some((p) => p.id === orphanProd.id || p.slug === orphanProd.slug);
     expect(exists).toBe(false);
   });
+
+  it('does NOT delete products older than 10 days if they are under an active order (not delivered or cancelled)', async () => {
+    const twelveDaysAgo = new Date(Date.now() - 12 * 24 * 60 * 60 * 1000).toISOString();
+
+    const orderedProduct = await repository.createProduct({
+      name: 'Ordered Old New Sneaker',
+      slug: 'ordered-old-new-sneaker-' + Date.now(),
+      description: 'Under active order',
+      price: 3200,
+      currency: 'ETB',
+      sku: 'TEST-ORDERED-OLD',
+      isNew: true,
+      isFeatured: false,
+      createdAt: twelveDaysAgo,
+    });
+
+    const order = await repository.createOrder({
+      customerName: 'Abebe Bikila',
+      customerEmail: 'abebe@example.com',
+      customerPhone: '+251911000000',
+      subcity: 'Bole',
+      street: 'Edna Mall',
+      items: [
+        {
+          productId: orderedProduct.id,
+          productName: orderedProduct.name,
+          variantKey: `${orderedProduct.id}-42`,
+          size: '42',
+          quantity: 1,
+          price: 3200,
+        },
+      ],
+    });
+
+    // Order is 'pending' -> product MUST NOT be deleted
+    await repository.deleteOldNewArrivalProducts(10);
+    const stillExistsPending = await repository.getProductBySlug(orderedProduct.slug);
+    expect(stillExistsPending).not.toBeNull();
+
+    // Update order to 'processing' -> product MUST STILL NOT be deleted
+    await repository.updateOrderStatus(order.id, 'processing');
+    await repository.deleteOldNewArrivalProducts(10);
+    const stillExistsProcessing = await repository.getProductBySlug(orderedProduct.slug);
+    expect(stillExistsProcessing).not.toBeNull();
+
+    // Update order to 'shipped' -> product MUST STILL NOT be deleted
+    await repository.updateOrderStatus(order.id, 'shipped');
+    await repository.deleteOldNewArrivalProducts(10);
+    const stillExistsShipped = await repository.getProductBySlug(orderedProduct.slug);
+    expect(stillExistsShipped).not.toBeNull();
+
+    // Once order is 'delivered', the product is no longer under an active order and CAN be cleaned up
+    await repository.updateOrderStatus(order.id, 'delivered');
+    const deletedAfterDelivery = await repository.deleteOldNewArrivalProducts(10);
+    expect(deletedAfterDelivery).toBeGreaterThanOrEqual(1);
+    const afterDeliveryCheck = await repository.getProductBySlug(orderedProduct.slug);
+    expect(afterDeliveryCheck).toBeNull();
+  });
 });
 
